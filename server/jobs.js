@@ -59,6 +59,7 @@ function pump() {
         console.error(`[job ${job.kind}] ${job.label}:`, err.message);
       })
       .finally(() => {
+        job.finishedAt = Date.now();
         running--;
         emit(job);
         pump();
@@ -76,10 +77,11 @@ export function publicJob(j) {
 }
 
 export function listJobs() {
-  // Drop finished jobs older than 10 minutes.
-  const cutoff = Date.now() - 10 * 60 * 1000;
+  // Forget jobs 30 minutes after they finish (not after they start, so long
+  // exports don't vanish the moment they complete).
+  const cutoff = Date.now() - 30 * 60 * 1000;
   for (const [id, j] of jobs) {
-    if (["done", "error", "cancelled"].includes(j.status) && j.createdAt < cutoff) jobs.delete(id);
+    if (["done", "error", "cancelled"].includes(j.status) && (j.finishedAt ?? Date.now()) < cutoff) jobs.delete(id);
   }
   return [...jobs.values()].map(publicJob);
 }

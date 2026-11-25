@@ -17,7 +17,9 @@ import { getAnalysis } from "./media.js";
 import { applyOperations, clipEnd, mapSourceIntervals, timelineDuration } from "../shared/timeline.js";
 
 export const DEFAULT_MODEL = "claude-opus-5-5";
-const MAX_IMAGES = 60;
+// Keyframes are small (288p JPEG, a few hundred tokens each), so a 20-minute
+// video can send ~one frame every 8-10 seconds.
+const MAX_IMAGES = 140;
 
 // ---------------------------------------------------------------------------
 // Output schema
@@ -170,7 +172,9 @@ async function buildContext(project, { playhead, selectedClipId }) {
 
   const mediaInfo = [];
   const images = [];
-  const imageBudget = Math.floor(MAX_IMAGES / Math.max(1, ready.length));
+  // Share the image budget by duration, favoring media that's on the timeline.
+  const weight = (m) => m.duration * (used.has(m.id) ? 2 : 1);
+  const totalWeight = ready.reduce((a, m) => a + weight(m), 0) || 1;
   for (const m of ready) {
     const a = await getAnalysis(m.id);
     const info = {
@@ -196,7 +200,8 @@ async function buildContext(project, { playhead, selectedClipId }) {
     mediaInfo.push(info);
 
     const kfs = a.keyframes || [];
-    const step = Math.max(1, kfs.length / Math.max(1, imageBudget));
+    const imageBudget = Math.max(4, Math.floor((MAX_IMAGES * weight(m)) / totalWeight));
+    const step = Math.max(1, kfs.length / imageBudget);
     for (let i = 0; i < kfs.length && images.length < MAX_IMAGES; i += step) {
       const k = kfs[Math.floor(i)];
       try {

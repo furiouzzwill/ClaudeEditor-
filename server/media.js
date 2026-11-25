@@ -24,7 +24,10 @@ export const AUDIO_EXT = /\.(mp3|wav|aac|m4a|flac|ogg|opus|aif|aiff|wma)$/i;
 
 const PROXY_HEIGHT = Number(process.env.PROXY_HEIGHT || 540);
 const WAVE_RATE = 20; // peaks per second
-const MAX_KEYFRAMES = 48;
+// About one keyframe every 8s (a 20-minute video gets ~120), within these bounds.
+const MIN_KEYFRAMES = 12;
+const MAX_KEYFRAMES = 150;
+const KEYFRAME_EVERY = 8;
 
 export async function registerMedia(projectId, { filePath, name, mediaId = uid("m") }) {
   const info = await probe(filePath);
@@ -232,16 +235,26 @@ async function makeKeyframes(media, proxyPath, dir, scenes, signal) {
   await fsp.rm(kdir, { recursive: true, force: true });
   await fsp.mkdir(kdir, { recursive: true });
   // One frame shortly into each scene, plus evenly spaced frames when there are
-  // few cuts, then thinned evenly down to MAX_KEYFRAMES.
+  // few cuts. The count scales with length so long videos stay well covered.
+  const target = Math.min(MAX_KEYFRAMES, Math.max(MIN_KEYFRAMES, Math.round(media.duration / KEYFRAME_EVERY)));
+  const spacing = Math.max(1, media.duration / target);
   let times = [0.5, ...scenes.map((t) => t + 0.3)];
-  const minSpacing = Math.max(2, media.duration / 24);
-  for (let t = minSpacing; t < media.duration; t += minSpacing) {
-    if (!times.some((x) => Math.abs(x - t) < minSpacing / 2)) times.push(t);
+  for (let t = spacing / 2; t < media.duration; t += spacing) {
+    if (!times.some((x) => Math.abs(x - t) < spacing / 2)) times.push(t);
   }
   times = times.filter((t) => t < media.duration - 0.1).sort((a, b) => a - b);
-  if (times.length > MAX_KEYFRAMES) {
-    const stepSize = times.length / MAX_KEYFRAMES;
-    times = Array.from({ length: MAX_KEYFRAMES }, (_, i) => times[Math.floor(i * stepSize)]);
+  // Too many (lots of scene cuts): keep the ones closest to an even grid.
+  if (times.length > target) {
+    const picked = new Set();
+    for (let i = 0; i < target; i++) {
+      const ideal = (i + 0.5) * (media.duration / target);
+      let best = -1;
+      for (let j = 0; j < times.length; j++) {
+        if (!picked.has(j) && (best < 0 || Math.abs(times[j] - ideal) < Math.abs(times[best] - ideal))) best = j;
+      }
+      picked.add(best);
+    }
+    times = [...picked].sort((a, b) => a - b).map((j) => times[j]);
   }
   const out = [];
   for (let i = 0; i < times.length; i++) {

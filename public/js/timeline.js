@@ -97,7 +97,7 @@ const frameSnap = (t) => snapToFrame(t, fps());
 
 // ---- zoom & scroll ----------------------------------------------------------------
 
-const ZMIN = 1.5;
+const ZMIN = 0.02; // fits ~15 hours on a wide screen
 const ZMAX = 600;
 const sliderToPps = (v) => ZMIN * Math.pow(ZMAX / ZMIN, v / 100);
 const ppsToSlider = (p) => (100 * Math.log(p / ZMIN)) / Math.log(ZMAX / ZMIN);
@@ -208,8 +208,8 @@ function roundRect(x, y, w, h, r) {
 }
 
 function niceStep(minSec) {
-  const steps = [1 / 30, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600];
-  return steps.find((s) => s >= minSec) || 7200;
+  const steps = [1 / 30, 0.1, 0.2, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600, 7200, 14400];
+  return steps.find((s) => s >= minSec) || 28800;
 }
 
 function fmtRuler(t) {

@@ -100,7 +100,48 @@ export async function renderProject(project, { quality = "standard", fileName, o
     const textClips = project.clips.filter((c) => trackById(project, c.trackId)?.kind === "text" && c.text?.trim());
     const overlayClips = overlayTracks.flatMap((t) => clipsOf(t.id));
     const audioClips = project.tracks.filter((t) => t.kind === "audio").flatMap((t) => clipsOf(t.id));
-    const needsComposite = textClips.length + overlayClips.length + audioClips.length > 0;
+    // A full re-encode of the whole timeline is only needed for picture-in-
+    // picture overlays (they must sit under the titles). Titles alone are drawn
+    // while each segment is cut, and extra audio is mixed while the video
+    // stream is copied untouched.
+    const needsComposite = overlayClips.length > 0;
+    const burnTextInSegments = !needsComposite && textClips.length > 0;
+
+    let font = null;
+    if (textClips.length) {
+      font = findFont();
+      if (!font) throw new Error("No font found for titles. Set CLAUDE_EDITOR_FONT to a .ttf file.");
+    }
+    const textFiles = new Map();
+    // drawtext for one title. `shift` converts timeline time to the local time
+    // of the stream it is applied to (segment start, or 0 for the composite).
+    const drawtext = (c, shift) => {
+      let tf = textFiles.get(c.id);
+      if (!tf) {
+        tf = path.join(work, `text_${textFiles.size}.txt`);
+        fs.writeFileSync(tf, c.text);
+        textFiles.set(c.id, tf);
+      }
+      const scale = H / 1080;
+      const st = c.style || {};
+      const size = Math.round((st.size || 56) * scale);
+      const y = st.position === "top" ? `h*0.08` : st.position === "center" ? `(h-text_h)/2` : `h*0.88-text_h`;
+      const t0 = toFrames(c.start) * frame - shift;
+      const t1 = toFrames(clipEnd(c)) * frame - shift;
+      const box = st.box === false ? "" : `:box=1:boxcolor=black@0.55:boxborderw=${Math.round(18 * scale)}`;
+      return (
+        `drawtext=fontfile=${escFilterPath(font)}:textfile=${escFilterPath(tf)}:expansion=none:fontsize=${size}:fontcolor=${(st.color || "#ffffff").replace("#", "0x")}` +
+        `${box}:line_spacing=${Math.round(8 * scale)}:x=(w-text_w)/2:y=${y}:enable='between(t,${t0.toFixed(4)},${t1.toFixed(4)})'`
+      );
+    };
+    // Titles overlapping a lane segment, as a filter suffix ("" if none).
+    const segmentTitles = (startFrame, frames) => {
+      if (!burnTextInSegments) return "";
+      const a = startFrame * frame;
+      const b = (startFrame + frames) * frame;
+      const hits = textClips.filter((c) => c.start < b && clipEnd(c) > a);
+      return hits.map((c) => "," + drawtext(c, a)).join("");
+    };
 
     // Intermediate segments are near-lossless when a composite pass follows.
     const segQ = needsComposite ? { crf: Math.min(q.crf, 14), preset: "veryfast" } : q;
@@ -113,11 +154,11 @@ export async function renderProject(project, { quality = "standard", fileName, o
       const s = toFrames(c.start);
       const e = toFrames(clipEnd(c));
       const from = Math.max(s, cursor);
-      if (from > cursor) lane.push({ gap: true, frames: from - cursor });
-      if (e > from) lane.push({ clip: c, frames: e - from, skip: (from - s) * frame });
+      if (from > cursor) lane.push({ gap: true, frames: from - cursor, startFrame: cursor });
+      if (e > from) lane.push({ clip: c, frames: e - from, skip: (from - s) * frame, startFrame: from });
       cursor = Math.max(cursor, e);
     }
-    if (cursor < total) lane.push({ gap: true, frames: total - cursor });
+    if (cursor < total) lane.push({ gap: true, frames: total - cursor, startFrame: cursor });
 
     const jobs = [
       ...lane.map((seg, i) => ({ kind: "lane", seg, i })),
@@ -129,7 +170,7 @@ export async function renderProject(project, { quality = "standard", fileName, o
     let doneWork = 0;
     const tick = (w) => {
       doneWork += w;
-      onProgress((doneWork / totalWork) * (needsComposite ? 0.75 : 0.9), "Rendering segments");
+      onProgress((doneWork / totalWork) * (needsComposite ? 0.75 : 0.92), "Rendering segments");
     };
 
     const segVideo = (j) => path.join(work, `${j.kind}_${j.i}.mp4`);
@@ -139,7 +180,8 @@ export async function renderProject(project, { quality = "standard", fileName, o
     const renderSegment = async (j) => {
       if (j.kind === "lane" && j.seg.gap) {
         const dur = (j.seg.frames * frame).toFixed(6);
-        await ffmpeg(["-f", "lavfi", "-i", `color=c=black:s=${W}x${H}:r=${fr.str}`, "-frames:v", String(j.seg.frames), ...x264(segQ), segVideo(j)], { signal });
+        const titles = segmentTitles(j.seg.startFrame, j.seg.frames);
+        await ffmpeg(["-f", "lavfi", "-i", `color=c=black:s=${W}x${H}:r=${fr.str}`, ...(titles ? ["-vf", "null" + titles] : []), "-frames:v", String(j.seg.frames), ...x264(segQ), segVideo(j)], { signal });
         await ffmpeg(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", dur, ...pcm, segAudio(j)], { signal });
         return;
       }
@@ -155,7 +197,7 @@ export async function renderProject(project, { quality = "standard", fileName, o
       if (j.kind !== "audio") {
         const vf =
           j.kind === "lane"
-            ? `setpts=PTS-STARTPTS,fps=${fr.str},${fitFilter(c.fit, W, H)},setsar=1,tpad=stop_mode=clone:stop_duration=2,format=yuv420p`
+            ? `setpts=PTS-STARTPTS,fps=${fr.str},${fitFilter(c.fit, W, H)},setsar=1,tpad=stop_mode=clone:stop_duration=2${segmentTitles(j.seg.startFrame, frames)},format=yuv420p`
             : // Overlays are scaled to fit and placed centered; no black bars.
               `setpts=PTS-STARTPTS,fps=${fr.str},scale=${W}:${H}:force_original_aspect_ratio=${c.fit === "fill" ? "increase" : "decrease"}:flags=lanczos,` +
               (c.fit === "fill" ? `crop=${W}:${H},` : `scale=trunc(iw/2)*2:trunc(ih/2)*2,`) +
@@ -191,16 +233,40 @@ export async function renderProject(project, { quality = "standard", fileName, o
     await ffmpeg(["-f", "concat", "-safe", "0", "-i", listV, "-c", "copy", baseV], { signal });
     await ffmpeg(["-f", "concat", "-safe", "0", "-i", listA, "-c", "copy", baseA], { signal });
 
+    // Extra audio (A1/A2 clips) delayed into place, mixed over the base audio.
+    const audioMix = (firstIdx) => {
+      const ins = [];
+      const chain = [];
+      const labels = ["[1:a]"];
+      let idx = firstIdx;
+      for (const j of jobs.filter((x) => (x.kind === "overlay" || x.kind === "audio") && fs.existsSync(segAudio(x)))) {
+        ins.push("-i", segAudio(j));
+        chain.push(`[${idx}:a]adelay=${Math.round(toFrames(j.clip.start) * frame * 1000)}:all=1[ad${idx}]`);
+        labels.push(`[ad${idx}]`);
+        idx++;
+      }
+      chain.push(`${labels.join("")}amix=inputs=${labels.length}:duration=first:normalize=0:dropout_transition=0,alimiter=limit=0.98[aout]`);
+      return { ins, chain, next: idx };
+    };
+
     if (!needsComposite) {
       onProgress(0.95, "Finishing");
-      await ffmpeg(["-i", baseV, "-i", baseA, "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", q.audio, "-movflags", "+faststart", "-t", D.toFixed(6), outFile], { signal });
+      if (!audioClips.length) {
+        await ffmpeg(["-i", baseV, "-i", baseA, "-map", "0:v", "-map", "1:a", "-c:v", "copy", "-c:a", "aac", "-b:a", q.audio, "-movflags", "+faststart", "-t", D.toFixed(6), outFile], { signal });
+      } else {
+        const mix = audioMix(2);
+        await ffmpeg(
+          ["-i", baseV, "-i", baseA, ...mix.ins, "-filter_complex", mix.chain.join(";"), "-map", "0:v", "-map", "[aout]",
+           "-c:v", "copy", "-c:a", "aac", "-b:a", q.audio, "-movflags", "+faststart", "-t", D.toFixed(6), outFile],
+          { signal }
+        );
+      }
       return outFile;
     }
 
     // ---- 3. Composite overlays, titles and extra audio ----------------------
     const inputs = ["-i", baseV, "-i", baseA];
     const vChain = [];
-    const aLabels = ["[1:a]"];
     let idx = 2;
     let vLabel = "[0:v]";
     let n = 0;
@@ -214,37 +280,15 @@ export async function renderProject(project, { quality = "standard", fileName, o
       vLabel = out;
       idx++;
     }
-    for (const j of jobs.filter((x) => (x.kind === "overlay" || x.kind === "audio") && fs.existsSync(segAudio(x)))) {
-      const delayMs = Math.round(toFrames(j.clip.start) * frame * 1000);
-      inputs.push("-i", segAudio(j));
-      const lbl = `[ad${idx}]`;
-      vChain.push(`[${idx}:a]adelay=${delayMs}:all=1${lbl}`);
-      aLabels.push(lbl);
-      idx++;
-    }
-    if (textClips.length) {
-      const font = findFont();
-      if (!font) throw new Error("No font found for titles. Set CLAUDE_EDITOR_FONT to a .ttf file.");
-      const scale = H / 1080;
-      textClips.forEach((c, i) => {
-        const tf = path.join(work, `text_${i}.txt`);
-        fs.writeFileSync(tf, c.text);
-        const st = c.style || {};
-        const size = Math.round((st.size || 56) * scale);
-        const y = st.position === "top" ? `h*0.08` : st.position === "center" ? `(h-text_h)/2` : `h*0.88-text_h`;
-        const t0 = toFrames(c.start) * frame;
-        const t1 = t0 + toFrames(clipDuration(c)) * frame;
-        const box = st.box === false ? "" : `:box=1:boxcolor=black@0.55:boxborderw=${Math.round(18 * scale)}`;
-        const out = `[tx${i}]`;
-        vChain.push(
-          `${vLabel}drawtext=fontfile=${escFilterPath(font)}:textfile=${escFilterPath(tf)}:fontsize=${size}:fontcolor=${(st.color || "#ffffff").replace("#", "0x")}` +
-            `${box}:line_spacing=${Math.round(8 * scale)}:x=(w-text_w)/2:y=${y}:enable='between(t,${t0.toFixed(4)},${t1.toFixed(4)})'${out}`
-        );
-        vLabel = out;
-      });
-    }
+    textClips.forEach((c, i) => {
+      const out = `[tx${i}]`;
+      vChain.push(`${vLabel}${drawtext(c, 0)}${out}`);
+      vLabel = out;
+    });
     vChain.push(`${vLabel}format=yuv420p[vout]`);
-    vChain.push(`${aLabels.join("")}amix=inputs=${aLabels.length}:duration=first:normalize=0:dropout_transition=0,alimiter=limit=0.98[aout]`);
+    const mix = audioMix(idx);
+    inputs.push(...mix.ins);
+    vChain.push(...mix.chain);
     const script = path.join(work, "graph.txt");
     await fsp.writeFile(script, vChain.join(";\n"));
 

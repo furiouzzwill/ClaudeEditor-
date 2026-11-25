@@ -13,7 +13,7 @@ Your 20 GB file ──► FFmpeg (on your machine)
                      ├─ waveform          audio peaks
                      ├─ scene cuts        where shots change
                      ├─ silences          pauses in the audio
-                     ├─ keyframes         ~24-48 small JPEGs per file
+                     ├─ keyframes         ~1 small JPEG per 8 s (up to 150/file)
                      └─ transcript        optional, with Whisper
                                    │
                                    ▼  (a few hundred KB)
@@ -27,7 +27,16 @@ Export ◄── FFmpeg renders the timeline from the ORIGINAL full-quality file
 - **Editing and playback** use the proxy, so scrubbing stays smooth however big the original is.
 - **Export** cuts each clip straight from the original with a fast seek, normalizes it, then joins the segments losslessly. Memory stays flat with hundreds of cuts.
 
-In testing, a 569 MB 1080p file imported in under 0.1 s and was analyzed in 33 s. Claude received about 320 KB of context. A 15-cut export took 84 s, with frame-exact output length.
+### Tested sizes (4-core Linux machine)
+
+| Source | Import | Prep (proxy and analysis) | Sent to Claude |
+|---|---|---|---|
+| 2 min, 1080p, 569 MB | 0.09 s | 33 s | ~1 KB text + 24 frames (~320 KB) |
+| 20 min, 1080p, 1.2 GB | 0.09 s | 4 min 52 s | ~2 KB text + 140 frames (~1.9 MB) |
+
+Exports come out at exactly the timeline length; a 20-minute timeline with 60 cuts finished at 1121.900 s. A timeline with titles and extra audio tracks only re-encodes each clip once. Picture-in-picture overlays (V2) add one extra full-length pass. Machines with more cores are proportionally faster.
+
+The design targets videos up to an hour or so. Longer ones work, but import takes longer and Claude's visual samples get sparser.
 
 ## Features
 
