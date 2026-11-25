@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Claude Editor</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='7' fill='%23d97757'/><path d='M9 10h14v3H9zm0 5h9v3H9zm0 5h14v3H9z' fill='white'/></svg>" />
+  <link rel="stylesheet" href="/css/app.css" />
+</head>
+<body>
+  <div id="app">
+    <header class="topbar">
+      <div class="brand"><span class="logo"></span>Claude Editor</div>
+      <div class="project-switch">
+        <input id="projectName" class="project-name" spellcheck="false" title="Project name" />
+        <button id="btnProjects" class="btn ghost" title="Open or create a project">Projects ▾</button>
+      </div>
+      <div class="spacer"></div>
+      <div id="jobsIndicator" class="jobs-indicator" hidden></div>
+      <button id="btnUndo" class="btn ghost icon" title="Undo (Ctrl/Cmd+Z)">↶</button>
+      <button id="btnRedo" class="btn ghost icon" title="Redo (Ctrl/Cmd+Shift+Z)">↷</button>
+      <button id="btnImport" class="btn">Import media</button>
+      <button id="btnExport" class="btn primary">Export</button>
+      <button id="btnSettings" class="btn ghost icon" title="Settings">⚙</button>
+    </header>
+
+    <section class="pane pool" id="mediaPool">
+      <div class="pane-head">
+        <span>Media Pool</span>
+        <span class="muted small" id="poolCount"></span>
+      </div>
+      <div class="pool-grid" id="poolGrid"></div>
+      <div class="pool-drop-hint">Drop video or audio files here to upload,<br />or use <b>Import media</b> to add large files without copying them.</div>
+    </section>
+
+    <section class="pane viewer">
+      <div class="pane-head">
+        <span>Timeline Viewer</span>
+        <span class="muted small" id="formatLabel"></span>
+      </div>
+      <div class="stage-wrap" id="stageWrap">
+        <div class="stage" id="stage">
+          <div class="stage-layers" id="stageLayers"></div>
+          <div class="stage-text" id="stageText"></div>
+          <div class="stage-empty" id="stageEmpty">Import media and drag it onto the timeline.</div>
+        </div>
+      </div>
+      <div class="transport">
+        <span class="tc" id="tcCurrent">00:00:00:00</span>
+        <div class="transport-buttons">
+          <button class="btn ghost icon" id="btnStart" title="Go to start (Home)">⏮</button>
+          <button class="btn ghost icon" id="btnBack" title="Previous frame (←)">◀︎</button>
+          <button class="btn icon play" id="btnPlay" title="Play/Pause (Space)">▶</button>
+          <button class="btn ghost icon" id="btnFwd" title="Next frame (→)">▶︎</button>
+          <button class="btn ghost icon" id="btnEnd" title="Go to end (End)">⏭</button>
+        </div>
+        <span class="tc muted" id="tcDuration">00:00:00:00</span>
+      </div>
+    </section>
+
+    <section class="pane side">
+      <div class="tabs" role="tablist">
+        <button class="tab active" data-tab="assistant" role="tab">✦ Claude</button>
+        <button class="tab" data-tab="inspector" role="tab">Inspector</button>
+      </div>
+      <div class="tab-body" id="tab-assistant">
+        <div class="chat" id="chat"></div>
+        <div class="chips" id="chips"></div>
+        <form class="composer" id="composer">
+          <textarea id="prompt" rows="3" placeholder="Tell Claude what to do… e.g. “cut the silences and make it under 60 seconds”"></textarea>
+          <button class="btn primary" id="btnSend" type="submit">Send</button>
+        </form>
+      </div>
+      <div class="tab-body" id="tab-inspector" hidden></div>
+    </section>
+
+    <section class="pane timeline-pane">
+      <div class="timeline-toolbar">
+        <div class="tool-group">
+          <button class="btn ghost tool active" data-tool="select" title="Selection tool (V)">⬚ Select</button>
+          <button class="btn ghost tool" data-tool="razor" title="Blade tool (B)">✂ Blade</button>
+        </div>
+        <div class="tool-group">
+          <button class="btn ghost" id="btnSplit" title="Split at playhead (S)">Split</button>
+          <button class="btn ghost" id="btnDelete" title="Delete (Del), Ripple delete (Shift+Del)">Delete</button>
+          <button class="btn ghost" id="btnMarker" title="Add marker (M)">Marker</button>
+          <label class="toggle" title="Snapping (N)"><input type="checkbox" id="snapToggle" checked /> Snap</label>
+        </div>
+        <div class="spacer"></div>
+        <div class="tool-group">
+          <button class="btn ghost icon" id="btnZoomOut" title="Zoom out (-)">−</button>
+          <input type="range" id="zoom" min="0" max="100" value="40" title="Zoom" />
+          <button class="btn ghost icon" id="btnZoomIn" title="Zoom in (+)">+</button>
+          <button class="btn ghost" id="btnFit" title="Zoom to fit (Shift+Z)">Fit</button>
+        </div>
+      </div>
+      <div class="timeline-wrap" id="timelineWrap">
+        <canvas id="timeline"></canvas>
+      </div>
+    </section>
+  </div>
+
+  <div id="modalRoot"></div>
+  <div id="toasts"></div>
+  <script type="module" src="/js/main.js"></script>
+</body>
+</html>
