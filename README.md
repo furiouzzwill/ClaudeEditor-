@@ -34,7 +34,7 @@ Export ◄── FFmpeg renders the timeline from the ORIGINAL full-quality file
 | 2 min, 1080p, 569 MB | 0.09 s | 33 s | ~1 KB text + 24 frames (~320 KB) |
 | 20 min, 1080p, 1.2 GB | 0.09 s | 4 min 52 s | ~2 KB text + 140 frames (~1.9 MB) |
 
-Exports come out at exactly the timeline length; a 20-minute timeline with 60 cuts finished at 1121.900 s. A timeline with titles and extra audio tracks only re-encodes each clip once. Picture-in-picture overlays (V2) add one extra full-length pass. Machines with more cores are proportionally faster.
+Exports come out at exactly the timeline length. A 20-minute timeline with 60 cuts and a title exported in 9 min 6 s at standard quality, at exactly 1121.900 s. A timeline with titles and extra audio tracks only re-encodes each clip once. Picture-in-picture overlays (V2) add one extra full-length pass. Machines with more cores are proportionally faster.
 
 The design targets videos up to an hour or so. Longer ones work, but import takes longer and Claude's visual samples get sparser.
 
