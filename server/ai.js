@@ -1,12 +1,16 @@
 // The Claude editing assistant.
 //
 // Claude never receives the video file. It gets:
-//   - the timeline (clips, tracks, markers) as JSON
-//   - per-media analysis: scene cuts, silences, transcript (when available)
-//   - the same facts mapped onto timeline time, so it doesn't do that math
-//   - a few dozen small keyframe images (288p JPEGs)
+//   - per-media analysis: scene cuts, silences, loud moments, transcript
+//   - keyframe images (432p JPEGs, one every ~2s for short videos)
+//   - the timeline (clips, effects, tracks, markers) as JSON, with the media
+//     facts mapped onto timeline time so it doesn't do that math
 // and replies with a structured edit plan: a list of timeline operations that
 // the editor validates (dry run) and shows to the user before applying.
+//
+// Request layout (for prompt caching): the footage block (analysis + images)
+// comes first and only changes when media changes, so follow-up requests
+// re-read it from cache. The timeline and the request come last.
 
 import fsp from "node:fs/promises";
 import path from "node:path";
@@ -14,11 +18,13 @@ import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
 import { getConfig, mediaDir } from "./store.js";
 import { getAnalysis } from "./media.js";
-import { applyOperations, clipEnd, mapSourceIntervals, timelineDuration } from "../shared/timeline.js";
+import {
+  applyOperations, clipEnd, mapSourceIntervals, mapSourcePoint, timelineDuration, speedOf,
+  EFFECT_TYPES, SOUND_EFFECTS, withSoundStubs,
+} from "../shared/timeline.js";
 
 export const DEFAULT_MODEL = "claude-opus-5-5";
-// Keyframes are small (288p JPEG, a few hundred tokens each), so a 20-minute
-// video can send ~one frame every 8-10 seconds.
+// ~440 tokens per keyframe; a 3-minute video sends ~90 of them.
 const MAX_IMAGES = 140;
 
 // ---------------------------------------------------------------------------
@@ -56,8 +62,9 @@ const OPERATIONS_SCHEMA = {
     opSchema("insert_media", "Place a range of a media file on a track, overwriting what is there. start -1 = append at the end of that track. trackId \"\" = V1 for video, A1 for audio-only media.", {
       mediaId: str, sourceIn: num, sourceOut: num, start: num, trackId: str,
     }),
-    opSchema("add_text", "Add a title or caption on the text track. size 0 = default (56 at 1080p). color \"\" = white.", {
+    opSchema("add_text", "Add a title or caption on the text track. look \"caption\" = white text on a dark box; \"impact\" = big bold yellow text with a black outline, for hype moments. size 0 and color \"\" = the look's defaults.", {
       start: num, end: num, text: str,
+      look: { type: "string", enum: ["caption", "impact"] },
       position: { type: "string", enum: ["top", "center", "bottom"] },
       size: num, color: str,
     }),
@@ -72,6 +79,23 @@ const OPERATIONS_SCHEMA = {
     opSchema("clear_timeline", "Remove all clips (trackId \"\") or all clips on one track. Use before rebuilding a timeline from scratch.", {
       trackId: str,
     }),
+    opSchema("add_effect", "Add a visual effect over [start, end) on an effects track. intensity 0..1 (0 = the effect's default).", {
+      type: { type: "string", enum: Object.keys(EFFECT_TYPES) },
+      start: num, end: num, intensity: num,
+    }),
+    opSchema("add_sound", "Add a built-in sound effect starting at `time`. volume 1 = normal.", {
+      sound: { type: "string", enum: Object.keys(SOUND_EFFECTS) },
+      time: num, volume: num,
+    }),
+    opSchema("slow_motion", "Play the video between start and end at `speed` (0.5 = half speed). Everything after it shifts later.", {
+      start: num, end: num, speed: num,
+    }),
+    opSchema("freeze_frame", "Hold the frame at `time` for `duration` seconds. Everything after it shifts later.", {
+      time: num, duration: num,
+    }),
+    opSchema("set_clip_speed", "Change a whole clip's speed (0.25-4). Later material shifts to stay in sync.", {
+      clipId: str, speed: num,
+    }),
   ],
 };
 
@@ -84,6 +108,8 @@ function normalizeOp(o) {
   for (const k of ["size", "width", "height", "fps"]) if (out[k] === 0) out[k] = null;
   if (typeof out.fit === "string") out.fit = out.fit.toLowerCase();
   if (typeof out.position === "string") out.position = out.position.toLowerCase();
+  for (const k of ["type", "sound", "look"]) if (typeof out[k] === "string") out[k] = out[k].toLowerCase();
+  if (out.op === "add_effect" && !(out.intensity > 0)) out.intensity = null;
   return out;
 }
 
@@ -108,10 +134,12 @@ const PlanZ = z.object({
         move_clip: ["clipId", "start"], trim_clip: ["clipId", "sourceIn", "sourceOut"], insert_media: ["mediaId", "sourceIn", "sourceOut"],
         add_text: ["start", "end", "text"], set_clip_volume: ["clipId", "volume"], set_clip_fit: ["clipId", "fit"],
         set_format: [], add_marker: ["time", "label"], clear_timeline: [],
+        add_effect: ["type", "start", "end"], add_sound: ["sound", "time"], slow_motion: ["start", "end", "speed"],
+        freeze_frame: ["time", "duration"], set_clip_speed: ["clipId", "speed"],
       }[o.op];
       if (!need) return ctx.addIssue({ code: "custom", message: `unknown op ${o.op}` });
       for (const k of need) if (o[k] == null) ctx.addIssue({ code: "custom", message: `${o.op} missing ${k}` });
-      for (const k of ["start", "end", "time", "sourceIn", "sourceOut", "volume"]) {
+      for (const k of ["start", "end", "time", "sourceIn", "sourceOut", "volume", "speed", "duration", "intensity"]) {
         if (o[k] != null && !n.safeParse(o[k]).success) ctx.addIssue({ code: "custom", message: `${o.op}.${k} must be a number` });
       }
     })
@@ -122,23 +150,31 @@ const PlanZ = z.object({
 // Prompt
 // ---------------------------------------------------------------------------
 
-const SYSTEM = `You are the editing assistant inside Claude Editor, a non-linear video editor. You help the user cut, arrange and polish their video by proposing edit plans.
+const SYSTEM = `You are the editing assistant inside Claude Editor, a non-linear video editor. You help the user cut, arrange and polish their videos, and add fun effects, by proposing edit plans.
 
-You cannot see or play the video. You see a description of it: the timeline as JSON, per-media analysis (scene cuts, silences, and a transcript when one exists), and sampled keyframe images labeled with their times. Judge visuals from the keyframes; be upfront when a request depends on visual detail the samples can't show.
+You cannot play the video. You see a description of it: per-media analysis (scene cuts, silences, loud moments, and a transcript when one exists), keyframe images labeled with their source time, and the timeline as JSON. Judge visuals from the keyframes, and be upfront when something depends on detail the samples can't show.
 
 How the timeline works:
 - Times are in seconds. "start"/"end" are timeline positions. "in"/"out" (sourceIn/sourceOut) are positions inside the source media file.
-- Tracks: T1 is titles. V2 is drawn above V1. A1/A2 are extra audio. Video clips carry their own audio.
-- The context lists silences and transcript lines both in source time and already mapped onto the timeline ("timeline_*" fields). Use the timeline-mapped values for timeline operations.
+- Tracks: FX1/FX2 hold effects, T1 holds titles, V2 is drawn above V1, A1/A2 are extra audio (sound effects go here). Video clips carry their own audio.
+- The <timeline> block maps media facts onto the timeline for you ("timeline_*" fields and keyframe positions). Use those values for timeline operations.
 
 How to plan:
-- Operations run in order, and each one sees the timeline as the previous one left it. Removing material shifts everything after it, so prefer one ripple_delete_ranges with all ranges (they all refer to the same starting timeline) over many separate deletes.
-- To build a new cut (highlight reel, short, trailer), clear_timeline then insert_media the chosen source ranges with start null so they append in order.
-- When trimming silences, leave about 0.1-0.15s of padding on each side of speech so cuts don't sound clipped, and skip silences shorter than about 0.35s unless asked.
+- Operations run in order, and each one sees the timeline as the previous one left it.
+- Removing material shifts everything after it, so prefer one ripple_delete_ranges with all ranges (they all refer to the same starting timeline).
+- slow_motion, freeze_frame and set_clip_speed also shift everything after them, including effects, titles and sounds you've already placed. Put these timing changes at the END of the plan, ordered from the latest time to the earliest, so the times in every other operation can refer to the timeline as it is now.
+- To build a new cut (highlight reel, short), clear_timeline then insert_media the chosen source ranges with start -1 so they append in order.
+- When trimming silences, leave about 0.1-0.15s of padding around speech, and skip silences shorter than about 0.35s unless asked.
 - For vertical 9:16, set_format 1080x1920 and set_clip_fit "fill" on the video clips.
-- Use real clip ids and media ids from the context. Don't invent ones that aren't there.
+- Use real clip ids and media ids from the context.
 - If the request is a question, or is too ambiguous to act on, answer in "message" with an empty operations list.
-- Keep "message" short: what you changed and why, or what you need from the user. Plain text, no markdown headings.`;
+- Keep "message" short: what you changed and why, or what you need. Plain text, no markdown headings.
+
+Fun effects, and pack-opening videos in particular:
+- Trading-card pack openings follow a rhythm: intro, opening the pack, then flipping through cards one at a time, with the rare "hit" cards usually near the back. The user's reaction (louder voice, "let's go!", "no way!") often follows a big pull, so loud moments are strong clues. Confirm with the keyframes: look for a shiny, full-art, holographic or otherwise special card being held up.
+- A good hype treatment for a hit card, timed to the reveal: a tension riser or drumroll starting ~1.5-2s before; at the reveal a short flash (0.2-0.4s) plus a sparkle or ka-ching sound; a zoom punch-in (1.5-3s, starting at the reveal); then optionally a 1-1.5s freeze frame or ~0.5x slow motion. Add an "impact" title only if you can actually read the card or the user told you what it is. Never guess card names.
+- Use rainbow for holographic or shiny cards, shake plus boom or air horn only for the single biggest moment, a pop or whoosh for quick transitions, black_white or spotlight for dramatic build-up, and blur to hide something (e.g. a spoiler in the intro).
+- Restraint makes it fun: treat the best 1-4 moments, vary the effects, and keep regular cards clean. If you can't find clear hit moments, say what you see and ask which cards to hype.`;
 
 function r2(t) {
   return Math.round(t * 100) / 100;
@@ -146,8 +182,44 @@ function r2(t) {
 
 async function buildContext(project, { playhead, selectedClipId }) {
   const used = new Set(project.clips.map((c) => c.mediaId).filter(Boolean));
-  const ready = project.media.filter((m) => m.status === "ready");
+  // Sound effects are listed by name in the schema; their analysis isn't useful.
+  const ready = project.media.filter((m) => m.status === "ready" && !m.sfx);
+  const analyses = new Map();
+  for (const m of ready) analyses.set(m.id, await getAnalysis(m.id));
 
+  // ---- stable footage block (cacheable) ----
+  const footage = [];
+  const images = [];
+  const totalDur = ready.reduce((a, m) => a + (m.hasVideo ? m.duration : 0), 0) || 1;
+  for (const m of ready) {
+    const a = analyses.get(m.id);
+    const info = {
+      id: m.id,
+      name: m.name,
+      duration: r2(m.duration),
+      resolution: m.hasVideo ? `${m.width}x${m.height}` : null,
+      fps: m.fps ? r2(m.fps) : null,
+      has_audio: m.hasAudio,
+      scene_cuts: (a.scenes || []).map(r2),
+      silences: (a.silences || []).map((s) => [r2(s.start), r2(s.end)]),
+      loud_moments: (a.loud || []).map((l) => [r2(l.start), r2(l.end), l.level]),
+    };
+    if (a.transcript?.segments?.length) info.transcript = a.transcript.segments.map((s) => [r2(s.start), r2(s.end), s.text]);
+    footage.push(info);
+
+    const kfs = a.keyframes || [];
+    const budget = Math.max(4, Math.floor((MAX_IMAGES * (m.hasVideo ? m.duration : 0)) / totalDur));
+    const step = Math.max(1, kfs.length / budget);
+    for (let i = 0; i < kfs.length && images.length < MAX_IMAGES; i += step) {
+      const k = kfs[Math.floor(i)];
+      try {
+        const data = (await fsp.readFile(path.join(mediaDir(m.id), "keyframes", k.file))).toString("base64");
+        images.push({ mediaId: m.id, time: k.time, data });
+      } catch {}
+    }
+  }
+
+  // ---- dynamic timeline block ----
   const timeline = {
     settings: project.settings,
     duration: r2(timelineDuration(project)),
@@ -162,57 +234,37 @@ async function buildContext(project, { playhead, selectedClipId }) {
         track: c.trackId,
         start: r2(c.start),
         end: r2(clipEnd(c)),
-        ...(c.mediaId ? { media: c.mediaId, in: r2(c.in), out: r2(c.out) } : {}),
+        ...(c.mediaId && !c.hold ? { media: c.mediaId, in: r2(c.in), out: r2(c.out) } : {}),
+        ...(c.hold ? { freeze_frame_of: c.mediaId, at: r2(c.holdAt) } : {}),
+        ...(speedOf(c) !== 1 ? { speed: speedOf(c) } : {}),
         ...(c.text ? { text: c.text } : {}),
-        ...(c.volume != null && c.volume !== 1 ? { volume: c.volume } : {}),
-        ...(c.fit && c.fit !== "fit" ? { fit: c.fit } : {}),
+        ...(c.effect ? { effect: c.effect.type, intensity: c.effect.intensity } : {}),
+        ...(c.mediaId && project.media.find((m) => m.id === c.mediaId)?.sfx ? { sound: project.media.find((m) => m.id === c.mediaId).sfx } : {}),
+        ...(c.volume != null && c.volume !== 1 && !c.effect && !c.text ? { volume: c.volume } : {}),
+        ...(c.fit && c.fit !== "fit" && !c.effect && !c.text ? { fit: c.fit } : {}),
       })),
     markers: project.markers.map((m) => ({ time: r2(m.time), label: m.label })),
+    media_on_timeline: [],
   };
-
-  const mediaInfo = [];
-  const images = [];
-  // Share the image budget by duration, favoring media that's on the timeline.
-  const weight = (m) => m.duration * (used.has(m.id) ? 2 : 1);
-  const totalWeight = ready.reduce((a, m) => a + weight(m), 0) || 1;
   for (const m of ready) {
-    const a = await getAnalysis(m.id);
-    const info = {
-      id: m.id,
-      name: m.name,
-      duration: r2(m.duration),
-      resolution: m.hasVideo ? `${m.width}x${m.height}` : null,
-      fps: m.fps ? r2(m.fps) : null,
-      has_audio: m.hasAudio,
-      on_timeline: used.has(m.id),
-      scene_cuts: (a.scenes || []).map(r2),
-      silences: (a.silences || []).map((s) => [r2(s.start), r2(s.end)]),
-    };
+    if (!used.has(m.id)) continue;
+    const a = analyses.get(m.id);
+    const mapped = { media: m.id };
+    mapped.timeline_silences = mapSourceIntervals(project, m.id, a.silences || []).map((s) => [r2(s.start), r2(s.end)]);
+    mapped.timeline_loud_moments = mapSourceIntervals(project, m.id, a.loud || []).map((s) => [r2(s.start), r2(s.end), s.level]);
     if (a.transcript?.segments?.length) {
-      info.transcript = a.transcript.segments.map((s) => [r2(s.start), r2(s.end), s.text]);
+      mapped.timeline_transcript = mapSourceIntervals(project, m.id, a.transcript.segments).map((s) => [r2(s.start), r2(s.end), s.text]);
     }
-    if (used.has(m.id)) {
-      info.timeline_silences = mapSourceIntervals(project, m.id, a.silences || []).map((s) => [r2(s.start), r2(s.end)]);
-      if (a.transcript?.segments?.length) {
-        info.timeline_transcript = mapSourceIntervals(project, m.id, a.transcript.segments).map((s) => [r2(s.start), r2(s.end), s.text]);
-      }
-    }
-    mediaInfo.push(info);
-
-    const kfs = a.keyframes || [];
-    const imageBudget = Math.max(4, Math.floor((MAX_IMAGES * weight(m)) / totalWeight));
-    const step = Math.max(1, kfs.length / imageBudget);
-    for (let i = 0; i < kfs.length && images.length < MAX_IMAGES; i += step) {
-      const k = kfs[Math.floor(i)];
-      try {
-        const data = (await fsp.readFile(path.join(mediaDir(m.id), "keyframes", k.file))).toString("base64");
-        images.push({ mediaId: m.id, time: k.time, data });
-      } catch {}
-    }
+    mapped.keyframes_on_timeline = images
+      .filter((img) => img.mediaId === m.id)
+      .map((img) => [img.time, mapSourcePoint(project, m.id, img.time).map(r2)])
+      .filter(([, ts]) => ts.length)
+      .map(([src, ts]) => [src, ts.length === 1 ? ts[0] : ts]);
+    timeline.media_on_timeline.push(mapped);
   }
 
-  const pending = project.media.filter((m) => m.status !== "ready").map((m) => `${m.name} (${m.status})`);
-  return { timeline, mediaInfo, images, pending };
+  const pending = project.media.filter((m) => m.status !== "ready" && !m.sfx).map((m) => `${m.name} (${m.status})`);
+  return { footage, images, timeline, pending };
 }
 
 function historyMessages(chat) {
@@ -291,38 +343,43 @@ export async function planEdit(project, { request, playhead = null, selectedClip
   const { anthropic, model } = await client();
   const ctx = await buildContext(project, { playhead, selectedClipId });
 
-  const content = [];
-  content.push({
-    type: "text",
-    text:
-      `<timeline>\n${JSON.stringify(ctx.timeline)}\n</timeline>\n\n` +
-      `<media>\n${JSON.stringify(ctx.mediaInfo)}\n</media>` +
-      (ctx.pending.length ? `\n\nStill processing (no analysis yet): ${ctx.pending.join(", ")}` : ""),
-  });
-  if (ctx.images.length) {
-    content.push({ type: "text", text: `Keyframes (${ctx.images.length}), each labeled with its media id and source time:` });
-    for (const img of ctx.images) {
-      const mapped = project.clips
-        .filter((c) => c.mediaId === img.mediaId && img.time >= c.in && img.time <= c.out)
-        .map((c) => r2(c.start + img.time - c.in));
-      content.push({ type: "text", text: `${img.mediaId} @ ${img.time}s${mapped.length ? ` (timeline ${mapped.join(", ")}s)` : " (not on timeline)"}` });
-      content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: img.data } });
-    }
+  // Footage block first: unchanged between requests unless media changes, so
+  // it is cached (the breakpoint is on its last block).
+  const footage = [{ type: "text", text: `<footage>\n${JSON.stringify(ctx.footage)}\n</footage>\nKeyframes (${ctx.images.length}), each labeled "media id @ source seconds":` }];
+  for (const img of ctx.images) {
+    footage.push({ type: "text", text: `${img.mediaId} @ ${img.time}s` });
+    footage.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: img.data } });
   }
-  content.push({ type: "text", text: `<request>\n${request}\n</request>` });
+  footage[footage.length - 1].cache_control = { type: "ephemeral" };
 
-  const messages = [...historyMessages(project.chat), { role: "user", content }];
+  const content = [
+    {
+      type: "text",
+      text:
+        `<timeline>\n${JSON.stringify(ctx.timeline)}\n</timeline>` +
+        (ctx.pending.length ? `\n\nStill processing (no analysis yet): ${ctx.pending.join(", ")}` : "") +
+        `\n\n<request>\n${request}\n</request>`,
+    },
+  ];
+
+  const messages = [
+    { role: "user", content: footage },
+    { role: "assistant", content: "I've reviewed the footage analysis and keyframes. What would you like to do?" },
+    ...historyMessages(project.chat),
+    { role: "user", content },
+  ];
   let result = await callClaude(anthropic, model, SYSTEM, messages);
 
   // Dry-run the plan. If an operation fails, give Claude one chance to fix it.
-  let dry = applyOperations(project, result.plan.operations);
+  const dryRun = (ops) => applyOperations(withSoundStubs(project, ops), ops);
+  let dry = dryRun(result.plan.operations);
   if (dry.error) {
     const retry = await callClaude(anthropic, model, SYSTEM, [
       ...messages,
       { role: "assistant", content: result.raw },
       { role: "user", content: `That plan failed when the editor dry-ran it: ${dry.error}\nReturn a corrected complete plan.` },
     ]);
-    const dry2 = applyOperations(project, retry.plan.operations);
+    const dry2 = dryRun(retry.plan.operations);
     if (!dry2.error || dry2.applied.length > dry.applied.length) {
       result = retry;
       dry = dry2;

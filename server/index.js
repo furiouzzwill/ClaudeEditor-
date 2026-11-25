@@ -11,7 +11,8 @@ import { listJobs, cancelJob, createJob, getJob } from "./jobs.js";
 import { renderProject, QUALITY } from "./render.js";
 import { planEdit, aiStatus, DEFAULT_MODEL } from "./ai.js";
 import { run, FFMPEG } from "./ffmpeg.js";
-import { uid } from "../shared/timeline.js";
+import { uid, SOUND_EFFECTS } from "../shared/timeline.js";
+import { sfxFile } from "./sfx.js";
 
 const PORT = Number(process.env.PORT || 5317);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -93,6 +94,18 @@ app.put("/api/projects/:id/upload", wrap(async (req, res) => {
     throw e;
   }
 }));
+
+// Add a built-in sound effect to the project's media (once per project).
+app.post("/api/projects/:id/sfx", express.json(), wrap(async (req, res) => {
+  const sound = String(req.body?.sound || "").toLowerCase();
+  if (!SOUND_EFFECTS[sound]) throw Object.assign(new Error(`Unknown sound effect: ${sound}`), { status: 400 });
+  const p = await store.getProject(req.params.id);
+  const existing = p.media.find((m) => m.sfx === sound);
+  if (existing) return res.json(existing);
+  const file = await sfxFile(sound);
+  res.json(await registerMedia(p.id, { filePath: file, name: `SFX · ${SOUND_EFFECTS[sound].label}`, extra: { sfx: sound } }));
+}));
+app.get("/api/sfx", (req, res) => res.json(SOUND_EFFECTS));
 
 app.delete("/api/projects/:id/media/:mid", wrap(async (req, res) => {
   let removed = null;

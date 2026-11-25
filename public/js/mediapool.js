@@ -13,8 +13,9 @@ export function render() {
   const p = store.project;
   if (!p) return;
   grid.innerHTML = "";
-  pool.classList.toggle("empty", p.media.length === 0 && uploads.size === 0);
-  count.textContent = p.media.length ? `${p.media.length} item${p.media.length === 1 ? "" : "s"}` : "";
+  const shown = p.media.filter((m) => !m.sfx).length;
+  pool.classList.toggle("empty", shown === 0 && uploads.size === 0);
+  count.textContent = shown ? `${shown} item${shown === 1 ? "" : "s"}` : "";
 
   for (const [id, u] of uploads) {
     grid.append(
@@ -27,6 +28,7 @@ export function render() {
   }
 
   for (const m of p.media) {
+    if (m.sfx) continue; // built-in sounds live in the 🔊 Sounds menu
     const ready = m.status === "ready";
     const thumbN = m.thumbCount ? String(Math.max(1, Math.ceil(m.thumbCount / 3))).padStart(4, "0") : null;
     const sub =

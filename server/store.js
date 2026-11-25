@@ -9,7 +9,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { createProject } from "../shared/timeline.js";
+import { createProject, migrateProject } from "../shared/timeline.js";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const ROOT = path.resolve(here, "..");
@@ -68,7 +68,7 @@ export async function listProjects() {
 export async function getProject(id) {
   const p = await readJson(projectFile(id));
   if (!p) throw Object.assign(new Error("Project not found"), { status: 404 });
-  return p;
+  return migrateProject(p);
 }
 
 export async function newProject(name) {

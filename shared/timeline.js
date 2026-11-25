@@ -6,12 +6,52 @@
 // Units: all times are seconds (floats). Timeline positions snap to frames.
 //
 // Clip shape:
-//   { id, trackId, start, in, out, mediaId?, volume?, fit?, text?, style? }
+//   { id, trackId, start, in, out, mediaId?, volume?, fit?, speed?, hold?, holdAt?,
+//     text?, style?, effect? }
 //   start    = position on the timeline
-//   in/out   = range in the source media (for text clips: in = 0, out = length)
-//   duration = out - in
+//   in/out   = range in the source media (for text/effect/hold clips: 0..length)
+//   speed    = playback speed (0.5 = half-speed slow motion)
+//   duration = (out - in) / speed
+//   hold     = freeze frame: shows the source frame at `holdAt` for the duration
+//   effect   = { type, intensity } on an effects (fx) track
 
-export const TRACK_KINDS = ["video", "audio", "text"];
+export const TRACK_KINDS = ["video", "audio", "text", "fx"];
+
+export const EFFECT_TYPES = {
+  zoom: { label: "Zoom punch-in", intensity: 0.35 },
+  shake: { label: "Camera shake", intensity: 0.5 },
+  flash: { label: "White flash", intensity: 0.8 },
+  rainbow: { label: "Rainbow holo shimmer", intensity: 0.7 },
+  blur: { label: "Blur (hide a spoiler)", intensity: 0.6 },
+  black_white: { label: "Black & white", intensity: 1 },
+  spotlight: { label: "Spotlight vignette", intensity: 0.6 },
+};
+
+export const SOUND_EFFECTS = {
+  whoosh: { label: "Whoosh", duration: 0.9 },
+  sparkle: { label: "Sparkle chime", duration: 1.4 },
+  pop: { label: "Pop", duration: 0.18 },
+  boom: { label: "Bass boom", duration: 1.6 },
+  cash: { label: "Ka-ching", duration: 1.0 },
+  drumroll: { label: "Drumroll", duration: 2.0 },
+  riser: { label: "Tension riser", duration: 2.0 },
+  airhorn: { label: "Air horn", duration: 1.1 },
+};
+
+// For dry runs: pretend any sound effects a plan uses are already imported.
+export function withSoundStubs(project, ops) {
+  const need = [...new Set(ops.filter((o) => o.op === "add_sound").map((o) => String(o.sound).toLowerCase()))].filter(
+    (snd) => SOUND_EFFECTS[snd] && !project.media.some((m) => m.sfx === snd)
+  );
+  if (!need.length) return project;
+  return {
+    ...project,
+    media: [
+      ...project.media,
+      ...need.map((snd) => ({ id: `sfx_${snd}`, name: SOUND_EFFECTS[snd].label, sfx: snd, duration: SOUND_EFFECTS[snd].duration, hasAudio: true, hasVideo: false, status: "ready" })),
+    ],
+  };
+}
 
 export function uid(prefix = "c") {
   return prefix + "_" + Math.random().toString(36).slice(2, 10);
@@ -25,6 +65,8 @@ export function createProject(name = "Untitled Project") {
     settings: { width: 1920, height: 1080, fps: 30 },
     media: [],
     tracks: [
+      { id: "FX2", kind: "fx", name: "Effects 2" },
+      { id: "FX1", kind: "fx", name: "Effects 1" },
       { id: "T1", kind: "text", name: "Titles" },
       { id: "V2", kind: "video", name: "Video 2" },
       { id: "V1", kind: "video", name: "Video 1" },
@@ -39,7 +81,18 @@ export function createProject(name = "Untitled Project") {
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
 
-export const clipDuration = (c) => c.out - c.in;
+// Older projects predate the effects tracks.
+export function migrateProject(p) {
+  if (!p.tracks.some((t) => t.kind === "fx")) {
+    p.tracks.unshift({ id: "FX2", kind: "fx", name: "Effects 2" }, { id: "FX1", kind: "fx", name: "Effects 1" });
+  }
+  return p;
+}
+
+export const speedOf = (c) => (c.hold || !c.speed ? 1 : c.speed);
+export const clipDuration = (c) => (c.out - c.in) / speedOf(c);
+// Source-media time shown at timeline time t (for a clip spanning t).
+export const srcAt = (c, t) => (c.hold ? c.holdAt : c.in + (t - c.start) * speedOf(c));
 export const clipEnd = (c) => c.start + clipDuration(c);
 
 export function snapToFrame(t, fps) {
@@ -87,7 +140,7 @@ export function splitAt(project, t, trackId = null) {
       next.push(c);
       continue;
     }
-    const offset = t - c.start;
+    const offset = (t - c.start) * speedOf(c);
     next.push({ ...c, out: c.in + offset });
     next.push({ ...c, id: uid(), start: t, in: c.in + offset });
   }
@@ -183,7 +236,7 @@ export function trimClip(project, clipId, newIn, newOut, { keepEnd = false } = {
   const p = clone(project);
   const c = p.clips.find((x) => x.id === clipId);
   if (!c) return p;
-  const m = c.mediaId ? mediaById(p, c.mediaId) : null;
+  const m = c.mediaId && !c.hold ? mediaById(p, c.mediaId) : null;
   const maxOut = m?.duration ?? Infinity;
   newIn = Math.max(0, newIn);
   newOut = Math.min(maxOut, newOut);
@@ -191,7 +244,7 @@ export function trimClip(project, clipId, newIn, newOut, { keepEnd = false } = {
   const end = clipEnd(c);
   c.in = newIn;
   c.out = newOut;
-  if (keepEnd) c.start = Math.max(0, end - (newOut - newIn));
+  if (keepEnd) c.start = Math.max(0, end - clipDuration(c));
   return p;
 }
 
@@ -217,6 +270,51 @@ export function appendMedia(project, mediaId, trackId = null, inPoint = 0, outPo
   });
 }
 
+// Open a gap of length d at time t on every track (everything after shifts right).
+export function insertGap(project, t, d) {
+  let p = splitAt(project, t);
+  p.clips = p.clips.map((c) => (c.start >= t - EPS ? { ...c, start: c.start + d } : c));
+  p.markers = p.markers.map((m) => (m.time >= t - EPS ? { ...m, time: m.time + d } : m));
+  return p;
+}
+
+// Change a clip's speed, keeping everything after it in sync: slowing down
+// pushes later material right; speeding up pulls it left.
+export function setClipSpeed(project, clipId, speed) {
+  const c = project.clips.find((x) => x.id === clipId);
+  if (!c) throw new Error(`No clip with id ${clipId}`);
+  if (!c.mediaId || c.hold) throw new Error("Only video or audio clips can change speed");
+  speed = Math.max(0.1, Math.min(4, Number(speed) || 1));
+  const oldEnd = clipEnd(c);
+  const newEnd = c.start + (c.out - c.in) / speed;
+  let p = clone(project);
+  if (newEnd > oldEnd + EPS) {
+    p = insertGap(p, oldEnd, newEnd - oldEnd);
+  } else if (newEnd < oldEnd - EPS) {
+    p = updateClip(p, clipId, { speed });
+    return deleteRange(p, newEnd, oldEnd, { ripple: true });
+  }
+  return updateClip(p, clipId, { speed });
+}
+
+// The video clip showing at time t (top-most video track first).
+export function videoClipAt(project, t) {
+  for (const tr of project.tracks.filter((x) => x.kind === "video")) {
+    const c = project.clips.find((x) => x.trackId === tr.id && t >= x.start - EPS && t < clipEnd(x) - EPS);
+    if (c) return c;
+  }
+  return null;
+}
+
+function freeTrack(project, kind, start, end, preferred) {
+  const tracks = project.tracks.filter((t) => t.kind === kind).map((t) => t.id).reverse(); // e.g. FX1 before FX2
+  const order = preferred ? [preferred, ...tracks.filter((t) => t !== preferred)] : tracks;
+  for (const id of order) {
+    if (!project.clips.some((c) => c.trackId === id && c.start < end - EPS && clipEnd(c) > start + EPS)) return id;
+  }
+  return order[0];
+}
+
 // ---------------------------------------------------------------------------
 // Operation interpreter (used for Claude's edit plans)
 // ---------------------------------------------------------------------------
@@ -240,6 +338,11 @@ export const OPERATION_TYPES = [
   "set_format",
   "add_marker",
   "clear_timeline",
+  "add_effect",
+  "slow_motion",
+  "set_clip_speed",
+  "freeze_frame",
+  "add_sound",
 ];
 
 export function applyOperation(project, op) {
@@ -285,12 +388,10 @@ export function applyOperation(project, op) {
         in: 0,
         out: len,
         text: String(op.text ?? ""),
-        style: {
-          position: op.position || "bottom",
-          size: Number(op.size) || 56,
-          color: op.color || "#ffffff",
-          box: op.box !== false,
-        },
+        style:
+          op.look === "impact"
+            ? { position: op.position || "center", size: Number(op.size) || 120, color: op.color || "#ffd400", box: false, outline: true }
+            : { position: op.position || "bottom", size: Number(op.size) || 56, color: op.color || "#ffffff", box: op.box !== false },
       });
     }
     case "set_clip_volume":
@@ -309,6 +410,49 @@ export function applyOperation(project, op) {
       const p = clone(project);
       p.markers.push({ id: uid("m"), time: s(op.time), label: String(op.label ?? ""), color: op.color || "#f5a623" });
       return p;
+    }
+    case "add_effect": {
+      const type = String(op.type || "").toLowerCase();
+      if (!EFFECT_TYPES[type]) throw new Error(`Unknown effect ${op.type}`);
+      const start = s(op.start);
+      const end = Math.max(start + 1 / fps, s(op.end));
+      const intensity = Math.max(0.05, Math.min(1, Number(op.intensity) || EFFECT_TYPES[type].intensity));
+      const p = clone(project);
+      migrateProject(p);
+      const trackId = op.trackId || freeTrack(p, "fx", start, end);
+      return placeClip(p, { trackId, start, in: 0, out: end - start, effect: { type, intensity } });
+    }
+    case "set_clip_speed":
+      return setClipSpeed(project, op.clipId, op.speed);
+    case "slow_motion": {
+      // Split the video under [start, end) and change the speed of that piece.
+      const start = s(op.start);
+      const end = s(op.end);
+      const c = videoClipAt(project, start + 0.5 / fps);
+      if (!c) throw new Error(`No video at ${start}s to slow down`);
+      let p = splitAt(project, start, c.trackId);
+      p = splitAt(p, Math.min(end, clipEnd(c)), c.trackId);
+      const piece = p.clips.find((x) => x.trackId === c.trackId && Math.abs(x.start - start) < EPS * 10 + 0.5 / fps);
+      if (!piece) throw new Error("Could not isolate the slow-motion range");
+      return setClipSpeed(p, piece.id, op.speed ?? 0.5);
+    }
+    case "freeze_frame": {
+      const time = s(op.time);
+      const d = Math.max(0.1, s(op.duration ?? 1));
+      const c = videoClipAt(project, time + 0.5 / fps) || videoClipAt(project, time - 0.5 / fps);
+      if (!c) throw new Error(`No video at ${time}s to freeze`);
+      const holdAt = Math.max(c.in, Math.min(c.out - 0.001, srcAt(c, Math.min(time, clipEnd(c) - 1 / fps))));
+      const p = insertGap(project, time, d);
+      p.clips.push({ id: uid(), trackId: c.trackId, mediaId: c.mediaId, start: time, in: 0, out: d, hold: true, holdAt, fit: c.fit || "fit", volume: 0 });
+      return p;
+    }
+    case "add_sound": {
+      const sound = String(op.sound || "").toLowerCase();
+      const m = project.media.find((x) => x.sfx === sound);
+      if (!m) throw new Error(`Sound effect "${sound}" hasn't been added to the project`);
+      const start = s(op.time);
+      const trackId = op.trackId || freeTrack(project, "audio", start, start + m.duration, "A1");
+      return placeClip(project, { trackId, mediaId: m.id, start, in: 0, out: m.duration, volume: op.volume ?? 1 });
     }
     case "clear_timeline": {
       const p = clone(project);
@@ -344,11 +488,12 @@ export function applyOperations(project, ops) {
 export function mapSourceIntervals(project, mediaId, intervals) {
   const out = [];
   for (const c of project.clips) {
-    if (c.mediaId !== mediaId) continue;
+    if (c.mediaId !== mediaId || c.hold) continue;
+    const sp = speedOf(c);
     for (const iv of intervals) {
       const a = Math.max(iv.start, c.in);
       const b = Math.min(iv.end, c.out);
-      if (b - a > EPS) out.push({ ...iv, clipId: c.id, start: c.start + (a - c.in), end: c.start + (b - c.in) });
+      if (b - a > EPS) out.push({ ...iv, clipId: c.id, start: c.start + (a - c.in) / sp, end: c.start + (b - c.in) / sp });
     }
   }
   return out.sort((x, y) => x.start - y.start);
@@ -357,7 +502,7 @@ export function mapSourceIntervals(project, mediaId, intervals) {
 export function mapSourcePoint(project, mediaId, t) {
   const hits = [];
   for (const c of project.clips) {
-    if (c.mediaId === mediaId && t >= c.in - EPS && t <= c.out + EPS) hits.push(c.start + (t - c.in));
+    if (c.mediaId === mediaId && !c.hold && t >= c.in - EPS && t <= c.out + EPS) hits.push(c.start + (t - c.in) / speedOf(c));
   }
   return hits;
 }

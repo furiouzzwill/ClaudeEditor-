@@ -3,7 +3,7 @@
 // in sync with whichever clip sits under the playhead on its track.
 
 import { store } from "./state.js";
-import { clipEnd, mediaById, formatTimecode, videoTracksBottomUp } from "/shared/timeline.js";
+import { clipEnd, mediaById, formatTimecode, videoTracksBottomUp, srcAt, speedOf } from "/shared/timeline.js";
 
 const stageWrap = document.getElementById("stageWrap");
 const stage = document.getElementById("stage");
@@ -16,6 +16,60 @@ const btnPlay = document.getElementById("btnPlay");
 const formatLabel = document.getElementById("formatLabel");
 
 const players = new Map(); // trackId -> { el, clipId, mediaId }
+
+// Effect preview layers (the export uses FFmpeg filters that match these).
+const flashEl = document.createElement("div");
+flashEl.style.cssText = "position:absolute;inset:0;background:#fff;opacity:0;pointer-events:none;z-index:40";
+const spotEl = document.createElement("div");
+spotEl.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:39;opacity:0;background:radial-gradient(ellipse at center, transparent 35%, rgba(0,0,0,0.92) 100%)";
+stage.append(spotEl, flashEl);
+
+function applyEffects(t) {
+  const p = store.project;
+  const active = p.clips.filter((c) => c.effect && t >= c.start && t < clipEnd(c));
+  let zoom = 1;
+  let dx = 0;
+  let dy = 0;
+  const filters = [];
+  let flash = 0;
+  let spot = 0;
+  for (const c of active) {
+    const k = c.effect.intensity ?? 0.5;
+    const a = c.start;
+    const b = clipEnd(c);
+    const r = Math.max(0.04, Math.min(0.15, (b - a) / 3));
+    const env = Math.min(1, Math.max(0, (t - a) / r)) * Math.min(1, Math.max(0, (b - t) / r));
+    switch (c.effect.type) {
+      case "zoom":
+        zoom += k * env;
+        break;
+      case "shake":
+        zoom += 0.1 * k * env;
+        dx += 3.5 * k * Math.sin(t * 53) * env;
+        dy += 3.5 * k * Math.cos(t * 41) * env;
+        break;
+      case "flash":
+        flash = Math.max(flash, k * Math.max(0, 1 - (t - a) / Math.max(0.05, b - a)));
+        break;
+      case "rainbow":
+        filters.push(`hue-rotate(${(t - a) * (150 + 250 * k)}deg) saturate(${1 + 0.9 * k})`);
+        break;
+      case "blur":
+        filters.push(`blur(${((4 + 36 * k) * Number(stage.dataset.scale || 1)).toFixed(1)}px)`);
+        break;
+      case "black_white":
+        filters.push("grayscale(1)");
+        break;
+      case "spotlight":
+        spot = Math.max(spot, 0.35 + 0.65 * k);
+        break;
+    }
+  }
+  layers.style.transform = zoom !== 1 || dx || dy ? `translate(${dx}%, ${dy}%) scale(${zoom})` : "";
+  layers.style.filter = filters.join(" ");
+  flashEl.style.opacity = flash.toFixed(3);
+  spotEl.style.opacity = spot.toFixed(3);
+}
 let clock = null; // { t0: performance.now(), p0: playhead }
 let raf = null;
 
@@ -96,8 +150,13 @@ function syncTo(t, playing) {
     const vol = Math.max(0, Math.min(1, clip.volume ?? 1));
     el.muted = vol === 0 || !media.hasAudio;
     el.volume = vol;
-    const target = clip.in + (t - clip.start);
-    if (playing) {
+    const target = srcAt(clip, t);
+    const rate = speedOf(clip);
+    if (el.playbackRate !== rate) el.playbackRate = rate;
+    if (clip.hold) {
+      if (!el.paused) el.pause();
+      if (Math.abs(el.currentTime - target) > 0.01 && !el.seeking) el.currentTime = target;
+    } else if (playing) {
       if (Math.abs(el.currentTime - target) > 0.25 && !el.seeking) el.currentTime = target;
       if (el.paused) el.play().catch(() => {});
     } else {
@@ -109,6 +168,7 @@ function syncTo(t, playing) {
     }
   }
   empty.hidden = anyVideo || store.project.clips.length > 0;
+  applyEffects(t);
   renderText();
 }
 
@@ -125,7 +185,7 @@ function renderText() {
   for (const c of active) {
     const st = c.style || {};
     const div = document.createElement("div");
-    div.className = "title" + (st.box === false ? "" : " box");
+    div.className = "title" + (st.box === false ? "" : " box") + (st.outline ? " outline" : "");
     div.textContent = c.text;
     const size = (st.size || 56) * (p.settings.height / 1080) * scale;
     div.style.fontSize = size + "px";

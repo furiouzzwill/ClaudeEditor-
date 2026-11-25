@@ -1,6 +1,6 @@
 import { store } from "./state.js";
 import { h } from "./ui.js";
-import { clipDuration, clipEnd, mediaById, trackById, updateClip, trimClip, moveClip, formatTimecode, removeClip } from "/shared/timeline.js";
+import { clipDuration, clipEnd, mediaById, trackById, updateClip, trimClip, moveClip, formatTimecode, removeClip, setClipSpeed, speedOf, EFFECT_TYPES } from "/shared/timeline.js";
 
 const root = document.getElementById("tab-inspector");
 
@@ -41,22 +41,52 @@ export function render() {
     const c = sel[0];
     const track = trackById(p, c.trackId);
     const media = c.mediaId ? mediaById(p, c.mediaId) : null;
+    const sourced = media && !c.hold; // has a real in/out range in its media
     const set = (fields) => safe(() => store.commit(updateClip(store.project, c.id, fields)));
 
     root.append(
       h("div", { class: "section" },
-        h("h4", {}, track.kind === "text" ? "Title" : "Clip"),
+        h("h4", {}, track.kind === "text" ? "Title" : track.kind === "fx" ? "Effect" : c.hold ? "Freeze frame" : "Clip"),
         media ? field("Source", h("span", { class: "small", title: media.path }, media.name)) : null,
         field("Track", h("span", {}, `${track.id} (${track.kind})`)),
         field("Start", num(c.start, (v) => safe(() => store.commit(moveClip(store.project, c.id, v))))),
-        field("Duration", num(clipDuration(c), (v) => safe(() => store.commit(trimClip(store.project, c.id, c.in, c.in + Math.max(1 / fps, v)))))),
+        field("Duration", num(clipDuration(c), (v) => safe(() => store.commit(trimClip(store.project, c.id, c.in, c.in + Math.max(1 / fps, v) * speedOf(c)))))),
         field("Timeline", h("span", { class: "small muted" }, `${formatTimecode(c.start, fps)} → ${formatTimecode(clipEnd(c), fps)}`)),
-        media ? field("Source in", num(c.in, (v) => safe(() => store.commit(trimClip(store.project, c.id, v, c.out))))) : null,
-        media ? field("Source out", num(c.out, (v) => safe(() => store.commit(trimClip(store.project, c.id, c.in, v))))) : null
+        sourced ? field("Source in", num(c.in, (v) => safe(() => store.commit(trimClip(store.project, c.id, v, c.out))))) : null,
+        sourced ? field("Source out", num(c.out, (v) => safe(() => store.commit(trimClip(store.project, c.id, c.in, v))))) : null,
+        c.hold ? field("Holds frame", h("span", { class: "small muted" }, `${c.holdAt.toFixed(2)}s of ${media?.name || "source"}`)) : null
       )
     );
 
-    if (media && media.hasAudio) {
+    if (track.kind === "fx" && c.effect) {
+      const k = c.effect.intensity ?? 0.5;
+      const label = h("span", { class: "small muted", style: { minWidth: "40px", textAlign: "right" } }, `${Math.round(k * 100)}%`);
+      root.append(
+        h("div", { class: "section" },
+          h("h4", {}, "Look"),
+          field("Effect", h("select", { onchange: (e) => set({ effect: { ...c.effect, type: e.target.value } }) },
+            ...Object.entries(EFFECT_TYPES).map(([v, d]) => h("option", { value: v, selected: v === c.effect.type }, d.label))
+          )),
+          field("Intensity", h("div", { class: "row" },
+            h("input", { type: "range", min: 0.05, max: 1, step: 0.05, value: k, oninput: (e) => (label.textContent = `${Math.round(e.target.value * 100)}%`), onchange: (e) => set({ effect: { ...c.effect, intensity: Number(e.target.value) } }) }),
+            label
+          ))
+        )
+      );
+    }
+    if (sourced && (track.kind === "video" || track.kind === "audio") && !media.sfx) {
+      const sp = speedOf(c);
+      root.append(
+        h("div", { class: "section" },
+          h("h4", {}, "Speed"),
+          field("Playback", h("select", { onchange: (e) => safe(() => store.commit(setClipSpeed(store.project, c.id, Number(e.target.value)))) },
+            ...[0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4].concat([0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4].includes(sp) ? [] : [sp])
+              .map((v) => h("option", { value: v, selected: Math.abs(v - sp) < 1e-6 }, v === 1 ? "Normal (1×)" : v < 1 ? `${v}× slow motion` : `${v}× fast`))
+          ))
+        )
+      );
+    }
+    if (media && media.hasAudio && !c.hold) {
       const vol = c.volume ?? 1;
       const label = h("span", { class: "small muted", style: { minWidth: "40px", textAlign: "right" } }, `${Math.round(vol * 100)}%`);
       root.append(
@@ -93,7 +123,8 @@ export function render() {
           )),
           field("Size", num(st.size || 56, (v) => setStyle("size", v), { step: 1, min: 8 })),
           field("Color", h("input", { type: "color", value: st.color || "#ffffff", onchange: (e) => setStyle("color", e.target.value) })),
-          field("Background", h("input", { type: "checkbox", checked: st.box !== false, style: { width: "auto" }, onchange: (e) => setStyle("box", e.target.checked) }))
+          field("Background", h("input", { type: "checkbox", checked: st.box !== false, style: { width: "auto" }, onchange: (e) => setStyle("box", e.target.checked) })),
+          field("Outline", h("input", { type: "checkbox", checked: !!st.outline, style: { width: "auto" }, onchange: (e) => setStyle("outline", e.target.checked) }))
         )
       );
     }

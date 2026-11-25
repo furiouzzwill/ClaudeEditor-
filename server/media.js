@@ -24,12 +24,14 @@ export const AUDIO_EXT = /\.(mp3|wav|aac|m4a|flac|ogg|opus|aif|aiff|wma)$/i;
 
 const PROXY_HEIGHT = Number(process.env.PROXY_HEIGHT || 540);
 const WAVE_RATE = 20; // peaks per second
-// About one keyframe every 8s (a 20-minute video gets ~120), within these bounds.
+// One keyframe every 2s for short videos (a 3-minute pack opening gets 90,
+// enough to catch individual card reveals), spreading out past 5 minutes.
 const MIN_KEYFRAMES = 12;
 const MAX_KEYFRAMES = 150;
-const KEYFRAME_EVERY = 8;
+const KEYFRAME_EVERY = 2;
+const KEYFRAME_HEIGHT = 432; // tall enough for Claude to read cards held up to the camera
 
-export async function registerMedia(projectId, { filePath, name, mediaId = uid("m") }) {
+export async function registerMedia(projectId, { filePath, name, mediaId = uid("m"), extra = {} }) {
   const info = await probe(filePath);
   if (!info.hasVideo && !info.hasAudio) throw new Error("No audio or video streams found in this file");
   if (info.isImage) throw new Error("Still images aren't supported yet. Import video or audio files.");
@@ -46,6 +48,7 @@ export async function registerMedia(projectId, { filePath, name, mediaId = uid("
     thumbCount: 0,
     analysis: null,
     addedAt: Date.now(),
+    ...extra,
   };
   await fsp.mkdir(mediaDir(mediaId), { recursive: true });
   await updateProject(projectId, (p) => {
@@ -93,12 +96,13 @@ export function queuePrepare(projectId, media) {
         if (media.hasVideo) thumbs = await makeThumbs(media, proxyPath, dir, step(0.6, 0.1, "Thumbnails"), ctx.signal);
         await setMedia(projectId, media.id, thumbs);
 
+        let peaks = null;
         if (media.hasAudio) {
           ctx.progress(0.72, "Waveform");
-          await makeWaveform(media, proxyPath, dir, ctx.signal);
+          peaks = await makeWaveform(media, proxyPath, dir, ctx.signal);
         }
 
-        const analysis = { scenes: [], silences: [], keyframes: [], transcript: null };
+        const analysis = { scenes: [], silences: [], keyframes: [], loud: peaks ? loudMoments(peaks) : [], transcript: null };
         if (media.hasVideo) {
           ctx.progress(0.75, "Detecting scenes");
           analysis.scenes = await detectScenes(media, proxyPath, step(0.75, 0.1, "Detecting scenes"), ctx.signal);
@@ -117,7 +121,7 @@ export function queuePrepare(projectId, media) {
           analysis: summarize(analysis),
         });
 
-        if (media.hasAudio && whisperAvailable()) queueTranscribe(projectId, media);
+        if (media.hasAudio && !media.sfx && whisperAvailable()) queueTranscribe(projectId, media);
       } catch (err) {
         await setMedia(projectId, media.id, { status: "error", error: err.message, progressLabel: null });
         throw err;
@@ -132,6 +136,7 @@ function summarize(a) {
     scenes: a.scenes.length,
     silences: a.silences.length,
     keyframes: a.keyframes.length,
+    loud: a.loud?.length ?? 0,
     transcript: a.transcript ? a.transcript.segments.length : null,
   };
 }
@@ -208,7 +213,43 @@ async function makeWaveform(media, proxyPath, dir, signal) {
   if (n) peaks.push(max);
   const bytes = Buffer.from(peaks.map((v) => Math.min(255, Math.round((v / 32768) * 255))));
   await fsp.writeFile(path.join(dir, "waveform.json"), JSON.stringify({ rate: WAVE_RATE, peaks: bytes.toString("base64") }));
+  return bytes;
 }
+
+// The loudest stretches of audio: in pack openings these are usually the
+// reactions to a big pull ("NO WAY!"). Returns up to 40, in time order.
+export function loudMoments(peaks, rate = WAVE_RATE) {
+  const win = Math.max(1, Math.round(rate / 2)); // 0.5s windows
+  const levels = [];
+  for (let i = 0; i < peaks.length; i += win) {
+    let sum = 0;
+    let n = 0;
+    for (let j = i; j < Math.min(peaks.length, i + win); j++) (sum += peaks[j]), n++;
+    levels.push(sum / Math.max(1, n));
+  }
+  if (levels.length < 4) return [];
+  const sorted = [...levels].sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)];
+  const p90 = sorted[Math.floor(sorted.length * 0.9)];
+  const max = sorted[sorted.length - 1] || 1;
+  const threshold = Math.max(p90, median * 1.6, 8);
+  const out = [];
+  for (let i = 0; i < levels.length; i++) {
+    if (levels[i] < threshold) continue;
+    const start = (i * win) / rate;
+    const last = out[out.length - 1];
+    if (last && start - last.end < 0.6) {
+      last.end = start + win / rate;
+      last.level = Math.max(last.level, levels[i] / max);
+    } else out.push({ start, end: start + win / rate, level: levels[i] / max });
+  }
+  return out
+    .sort((a, b) => b.level - a.level)
+    .slice(0, 40)
+    .sort((a, b) => a.start - b.start)
+    .map((m) => ({ start: round(m.start), end: round(m.end), level: Math.round(m.level * 100) / 100 }));
+}
+
 
 async function detectScenes(media, proxyPath, onProgress, signal) {
   const scenes = [];
@@ -237,6 +278,7 @@ async function makeKeyframes(media, proxyPath, dir, scenes, signal) {
   // One frame shortly into each scene, plus evenly spaced frames when there are
   // few cuts. The count scales with length so long videos stay well covered.
   const target = Math.min(MAX_KEYFRAMES, Math.max(MIN_KEYFRAMES, Math.round(media.duration / KEYFRAME_EVERY)));
+  // (beyond 5 minutes the cap spreads frames out evenly)
   const spacing = Math.max(1, media.duration / target);
   let times = [0.5, ...scenes.map((t) => t + 0.3)];
   for (let t = spacing / 2; t < media.duration; t += spacing) {
@@ -259,7 +301,7 @@ async function makeKeyframes(media, proxyPath, dir, scenes, signal) {
   const out = [];
   for (let i = 0; i < times.length; i++) {
     const file = `${String(i + 1).padStart(4, "0")}.jpg`;
-    await run(FFMPEG, ["-hide_banner", "-nostdin", "-y", "-ss", times[i].toFixed(3), "-i", proxyPath, "-frames:v", "1", "-vf", "scale=-2:288", "-q:v", "5", path.join(kdir, file)], { signal });
+    await run(FFMPEG, ["-hide_banner", "-nostdin", "-y", "-ss", times[i].toFixed(3), "-i", proxyPath, "-frames:v", "1", "-vf", `scale=-2:'min(${KEYFRAME_HEIGHT},ih)'`, "-q:v", "4", path.join(kdir, file)], { signal });
     out.push({ time: Math.round(times[i] * 100) / 100, file });
   }
   return out;

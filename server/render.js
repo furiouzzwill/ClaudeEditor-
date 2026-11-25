@@ -19,7 +19,7 @@ import os from "node:os";
 import path from "node:path";
 import { ffmpeg } from "./ffmpeg.js";
 import { EXPORTS } from "./store.js";
-import { clipDuration, clipEnd, mediaById, timelineDuration, trackById } from "../shared/timeline.js";
+import { clipDuration, clipEnd, mediaById, timelineDuration, trackById, speedOf } from "../shared/timeline.js";
 
 export const QUALITY = {
   draft: { crf: 28, preset: "veryfast", audio: "128k" },
@@ -128,7 +128,9 @@ export async function renderProject(project, { quality = "standard", fileName, o
       const y = st.position === "top" ? `h*0.08` : st.position === "center" ? `(h-text_h)/2` : `h*0.88-text_h`;
       const t0 = toFrames(c.start) * frame - shift;
       const t1 = toFrames(clipEnd(c)) * frame - shift;
-      const box = st.box === false ? "" : `:box=1:boxcolor=black@0.55:boxborderw=${Math.round(18 * scale)}`;
+      const box =
+        (st.box === false ? "" : `:box=1:boxcolor=black@0.55:boxborderw=${Math.round(18 * scale)}`) +
+        (st.outline ? `:borderw=${Math.max(2, Math.round(7 * scale))}:bordercolor=black:shadowx=${Math.round(4 * scale)}:shadowy=${Math.round(4 * scale)}:shadowcolor=black@0.6` : "");
       return (
         `drawtext=fontfile=${escFilterPath(font)}:textfile=${escFilterPath(tf)}:expansion=none:fontsize=${size}:fontcolor=${(st.color || "#ffffff").replace("#", "0x")}` +
         `${box}:line_spacing=${Math.round(8 * scale)}:x=(w-text_w)/2:y=${y}:enable='between(t,${t0.toFixed(4)},${t1.toFixed(4)})'`
@@ -141,6 +143,64 @@ export async function renderProject(project, { quality = "standard", fileName, o
       const b = (startFrame + frames) * frame;
       const hits = textClips.filter((c) => c.start < b && clipEnd(c) > a);
       return hits.map((c) => "," + drawtext(c, a)).join("");
+    };
+
+    // Effects (FX tracks) are applied to the base video while each segment is
+    // cut, with times converted to the segment's local clock.
+    const fxClips = project.clips.filter((c) => c.effect && trackById(project, c.trackId)?.kind === "fx");
+    const segmentEffects = (startFrame, frames) => {
+      const a0 = startFrame * frame;
+      const b0 = (startFrame + frames) * frame;
+      const hits = fxClips.filter((c) => c.start < b0 && clipEnd(c) > a0);
+      if (!hits.length) return "";
+      const win = (c) => [toFrames(c.start) * frame - a0, toFrames(clipEnd(c)) * frame - a0].map((v) => v.toFixed(4));
+      // Smooth 0..1 envelope over [A,B] with short ease in/out, in zoompan's clock (it).
+      const env = (c) => {
+        const [A, B] = win(c);
+        const r = Math.max(0.04, Math.min(0.15, (B - A) / 3)).toFixed(3);
+        return `min(1,max(0,(it-${A})/${r}))*min(1,max(0,(${B}-it)/${r}))`;
+      };
+      const out = [];
+      const zooms = hits.filter((c) => c.effect.type === "zoom");
+      const shakes = hits.filter((c) => c.effect.type === "shake");
+      if (zooms.length || shakes.length) {
+        const z = ["1", ...zooms.map((c) => `${c.effect.intensity.toFixed(3)}*${env(c)}`), ...shakes.map((c) => `${(0.1 * c.effect.intensity).toFixed(3)}*${env(c)}`)].join("+");
+        const jx = shakes.map((c) => `iw*${(0.035 * c.effect.intensity).toFixed(4)}*sin(it*53)*${env(c)}`).join("+") || "0";
+        const jy = shakes.map((c) => `ih*${(0.035 * c.effect.intensity).toFixed(4)}*cos(it*41)*${env(c)}`).join("+") || "0";
+        out.push(
+          `zoompan=z='${z}':x='max(0,min(iw-iw/zoom,iw/2-iw/zoom/2+${jx}))':y='max(0,min(ih-ih/zoom,ih/2-ih/zoom/2+${jy}))':d=1:s=${W}x${H}:fps=${fr.str}`
+        );
+      }
+      for (const c of hits) {
+        const [A, B] = win(c);
+        const k = c.effect.intensity;
+        const on = `between(t,${A},${B})`;
+        switch (c.effect.type) {
+          case "flash":
+            out.push(`eq=brightness='${k.toFixed(3)}*${on}*max(0,1-(t-${A})/max(0.05,${B}-${A}))':eval=frame`);
+            break;
+          case "rainbow":
+            out.push(`hue=h='${on}*(t-${A})*${Math.round(150 + 250 * k)}':s='1+${on}*${(0.9 * k).toFixed(3)}'`);
+            break;
+          case "blur":
+            out.push(`gblur=sigma=${(4 + 36 * k).toFixed(1)}:enable='${on}'`);
+            break;
+          case "black_white":
+            out.push(`hue=s=0:enable='${on}'`);
+            break;
+          case "spotlight":
+            out.push(`vignette=angle=${(0.35 + 0.65 * k).toFixed(3)}:enable='${on}'`);
+            break;
+        }
+      }
+      return out.map((f) => "," + f).join("");
+    };
+    const atempo = (sp) => {
+      const parts = [];
+      while (sp > 2) (parts.push(2), (sp /= 2));
+      while (sp < 0.5) (parts.push(0.5), (sp /= 0.5));
+      parts.push(sp);
+      return parts.map((p) => `atempo=${p.toFixed(5)}`).join(",");
     };
 
     // Intermediate segments are near-lossless when a composite pass follows.
@@ -180,7 +240,7 @@ export async function renderProject(project, { quality = "standard", fileName, o
     const renderSegment = async (j) => {
       if (j.kind === "lane" && j.seg.gap) {
         const dur = (j.seg.frames * frame).toFixed(6);
-        const titles = segmentTitles(j.seg.startFrame, j.seg.frames);
+        const titles = segmentEffects(j.seg.startFrame, j.seg.frames) + segmentTitles(j.seg.startFrame, j.seg.frames);
         await ffmpeg(["-f", "lavfi", "-i", `color=c=black:s=${W}x${H}:r=${fr.str}`, ...(titles ? ["-vf", "null" + titles] : []), "-frames:v", String(j.seg.frames), ...x264(segQ), segVideo(j)], { signal });
         await ffmpeg(["-f", "lavfi", "-i", "anullsrc=r=48000:cl=stereo", "-t", dur, ...pcm, segAudio(j)], { signal });
         return;
@@ -192,22 +252,34 @@ export async function renderProject(project, { quality = "standard", fileName, o
       const skip = j.kind === "lane" ? j.seg.skip : 0;
       const frames = j.kind === "lane" ? j.seg.frames : toFrames(clipDuration(c));
       const durSec = frames * frame;
-      const srcIn = (c.in + skip).toFixed(6);
+      const sp = speedOf(c);
+      const srcIn = (c.hold ? c.holdAt : c.in + skip * sp).toFixed(6);
+      // Freeze frames take one frame and hold it; speed changes retime the source.
+      const timing = c.hold ? "setpts=N/FRAME_RATE/TB" : sp === 1 ? "setpts=PTS-STARTPTS" : `setpts=(PTS-STARTPTS)/${sp}`;
+      const pad = `tpad=stop_mode=clone:stop_duration=${(durSec + 2).toFixed(2)}`;
 
       if (j.kind !== "audio") {
         const vf =
           j.kind === "lane"
-            ? `setpts=PTS-STARTPTS,fps=${fr.str},${fitFilter(c.fit, W, H)},setsar=1,tpad=stop_mode=clone:stop_duration=2${segmentTitles(j.seg.startFrame, frames)},format=yuv420p`
+            ? `${timing},fps=${fr.str},${fitFilter(c.fit, W, H)},setsar=1,${pad}${segmentEffects(j.seg.startFrame, frames)}${segmentTitles(j.seg.startFrame, frames)},format=yuv420p`
             : // Overlays are scaled to fit and placed centered; no black bars.
-              `setpts=PTS-STARTPTS,fps=${fr.str},scale=${W}:${H}:force_original_aspect_ratio=${c.fit === "fill" ? "increase" : "decrease"}:flags=lanczos,` +
+              `${timing},fps=${fr.str},scale=${W}:${H}:force_original_aspect_ratio=${c.fit === "fill" ? "increase" : "decrease"}:flags=lanczos,` +
               (c.fit === "fill" ? `crop=${W}:${H},` : `scale=trunc(iw/2)*2:trunc(ih/2)*2,`) +
-              `setsar=1,tpad=stop_mode=clone:stop_duration=2,format=yuv420p`;
-        await ffmpeg(["-ss", srcIn, "-i", m.path, "-map", "0:v:0", "-an", "-vf", vf, "-frames:v", String(frames), ...x264(segQ), segVideo(j)], { signal });
+              `setsar=1,${pad},format=yuv420p`;
+        let input = ["-ss", srcIn, "-i", m.path, "-map", "0:v:0"];
+        if (c.hold) {
+          // Freeze frame: grab exactly one frame as an image, then loop it.
+          const still = path.join(work, `${j.kind}_${j.i}_still.png`);
+          await ffmpeg(["-ss", srcIn, "-i", m.path, "-map", "0:v:0", "-frames:v", "1", "-update", "1", still], { signal });
+          input = ["-loop", "1", "-framerate", fr.str, "-i", still];
+        }
+        await ffmpeg([...input, "-an", "-vf", vf, "-frames:v", String(frames), ...x264(segQ), segVideo(j)], { signal });
       }
-      const vol = Number.isFinite(c.volume) ? c.volume : 1;
+      const vol = c.hold ? 0 : Number.isFinite(c.volume) ? c.volume : 1;
       if (m.hasAudio && vol > 0) {
+        const tempo = sp === 1 ? "" : "," + atempo(sp);
         await ffmpeg(
-          ["-ss", srcIn, "-i", m.path, "-map", "0:a:0", "-vn", "-af", `aresample=48000,volume=${vol},apad`, "-t", durSec.toFixed(6), ...pcm, segAudio(j)],
+          ["-ss", srcIn, "-i", m.path, "-map", "0:a:0", "-vn", "-af", `aresample=48000${tempo},volume=${vol},apad`, "-t", durSec.toFixed(6), ...pcm, segAudio(j)],
           { signal }
         );
       } else if (j.kind === "lane") {

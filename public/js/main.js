@@ -1,13 +1,14 @@
 import { store } from "./state.js";
 import { api } from "./api.js";
-import { toast } from "./ui.js";
+import { toast, menu } from "./ui.js";
+import { ensureSounds } from "./sounds.js";
 import { redraw, zoomBy, zoomToFit } from "./timeline.js";
 import { togglePlay, pause, step } from "./viewer.js";
 import * as inspector from "./inspector.js";
 import "./mediapool.js";
 import "./assistant.js";
 import { openImport, openExport, openSettings, openProjectsMenu } from "./dialogs.js";
-import { splitAt, removeClip, deleteRanges, clipEnd, uid, snapToFrame } from "/shared/timeline.js";
+import { splitAt, removeClip, deleteRanges, clipEnd, uid, snapToFrame, applyOperation, EFFECT_TYPES, SOUND_EFFECTS } from "/shared/timeline.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -107,6 +108,47 @@ function addMarker() {
   const t = snapToFrame(store.playhead, store.project.settings.fps);
   store.commit({ ...store.project, markers: [...store.project.markers, { id: uid("m"), time: t, label: `Marker ${store.project.markers.length + 1}`, color: "#f5a623" }] });
 }
+// ---- quick effects & sounds at the playhead ----------------------------------------
+
+const EFFECT_LENGTH = { zoom: 2, shake: 1, flash: 0.3, rainbow: 2, blur: 2, black_white: 2, spotlight: 2 };
+function runOp(op) {
+  try {
+    const next = applyOperation(store.project, op);
+    store.commit(next);
+  } catch (e) {
+    toast(e.message, { error: true });
+  }
+}
+$("btnEffects").onclick = (e) => {
+  const t = snapToFrame(store.playhead, store.project.settings.fps);
+  menu(e.currentTarget, [
+    ...Object.entries(EFFECT_TYPES).map(([type, d]) => ({
+      label: d.label,
+      hint: `${EFFECT_LENGTH[type]}s`,
+      action: () => runOp({ op: "add_effect", type, start: t, end: t + EFFECT_LENGTH[type] }),
+    })),
+    "-",
+    { label: "Slow motion (0.5×)", hint: "next 2s", action: () => runOp({ op: "slow_motion", start: t, end: t + 2, speed: 0.5 }) },
+    { label: "Freeze frame", hint: "1s", action: () => runOp({ op: "freeze_frame", time: t, duration: 1 }) },
+    { label: "Hype title", hint: "2s", action: () => runOp({ op: "add_text", start: t, end: t + 2, text: "LET'S GO!", look: "impact" }) },
+  ]);
+};
+$("btnSounds").onclick = (e) => {
+  const t = snapToFrame(store.playhead, store.project.settings.fps);
+  menu(e.currentTarget, Object.entries(SOUND_EFFECTS).map(([sound, d]) => ({
+    label: d.label,
+    hint: `${d.duration}s`,
+    action: async () => {
+      try {
+        await ensureSounds([sound]);
+        runOp({ op: "add_sound", sound, time: t, volume: 1 });
+      } catch (err) {
+        toast(err.message, { error: true });
+      }
+    },
+  })));
+};
+
 $("btnSplit").onclick = splitAtPlayhead;
 $("btnDelete").onclick = (e) => deleteSelection(e.shiftKey);
 $("btnMarker").onclick = addMarker;

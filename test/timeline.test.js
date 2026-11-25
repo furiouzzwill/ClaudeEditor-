@@ -118,3 +118,64 @@ test("operations never mutate their input", () => {
 test("formatTimecode", () => {
   assert.equal(T.formatTimecode(3661.5, 30), "01:01:01:15");
 });
+
+// ---- effects, speed, freeze, sounds --------------------------------------------
+
+test("slow_motion stretches a range and pushes later material", () => {
+  let p = project();
+  p = T.applyOperation(p, { op: "add_text", start: 15, end: 16, text: "later", position: "bottom" });
+  p = T.applyOperation(p, { op: "slow_motion", start: 4, end: 6, speed: 0.5 });
+  assert.deepEqual(spans(p, "V1"), [[0, 4, 0], [4, 8, 4], [8, 22, 6]]);
+  assert.equal(T.clipsOnTrack(p, "V1")[1].speed, 0.5);
+  assert.deepEqual(spans(p, "T1"), [[17, 18, 0]], "titles after the slow-mo shift by the added time");
+  // Source times map correctly through the slowed clip.
+  assert.deepEqual(T.mapSourcePoint(p, "m1", 5), [6]);
+  assert.equal(T.srcAt(T.clipsOnTrack(p, "V1")[1], 6), 5);
+});
+
+test("speeding up pulls later material left", () => {
+  let p = project();
+  p = T.splitAt(p, 10);
+  const first = T.clipsOnTrack(p, "V1")[0];
+  p = T.applyOperation(p, { op: "set_clip_speed", clipId: first.id, speed: 2 });
+  assert.deepEqual(spans(p, "V1"), [[0, 5, 0], [5, 15, 10]]);
+});
+
+test("freeze_frame inserts a held frame and shifts the rest", () => {
+  let p = project();
+  p = T.applyOperation(p, { op: "freeze_frame", time: 5, duration: 1.5 });
+  const v1 = T.clipsOnTrack(p, "V1");
+  assert.deepEqual(v1.map((c) => [c.start, +T.clipEnd(c).toFixed(3)]), [[0, 5], [5, 6.5], [6.5, 21.5]]);
+  assert.equal(v1[1].hold, true);
+  assert.equal(v1[1].holdAt, 5);
+  assert.equal(T.timelineDuration(p), 21.5);
+});
+
+test("add_effect stacks on free effects tracks", () => {
+  let p = project();
+  p = T.applyOperation(p, { op: "add_effect", type: "zoom", start: 2, end: 4, intensity: 0 });
+  p = T.applyOperation(p, { op: "add_effect", type: "Flash", start: 3, end: 3.4, intensity: 0.9 });
+  const fx = p.clips.filter((c) => c.effect);
+  assert.equal(fx.length, 2);
+  assert.notEqual(fx[0].trackId, fx[1].trackId);
+  assert.equal(fx[0].effect.intensity, T.EFFECT_TYPES.zoom.intensity, "0 means default");
+  assert.equal(fx[1].effect.type, "flash");
+  assert.throws(() => T.applyOperation(p, { op: "add_effect", type: "explode", start: 1, end: 2 }));
+});
+
+test("add_sound needs the sound in the project, then lands on a free audio track", () => {
+  let p = project();
+  assert.throws(() => T.applyOperation(p, { op: "add_sound", sound: "whoosh", time: 1 }), /hasn't been added/);
+  p.media.push({ id: "sfx1", name: "Whoosh", sfx: "whoosh", duration: 0.8, hasAudio: true, hasVideo: false });
+  p = T.applyOperation(p, { op: "add_sound", sound: "whoosh", time: 1, volume: 0.7 });
+  p = T.applyOperation(p, { op: "add_sound", sound: "whoosh", time: 1.2, volume: 1 });
+  const a = p.clips.filter((c) => c.mediaId === "sfx1");
+  assert.deepEqual(a.map((c) => c.trackId).sort(), ["A1", "A2"]);
+});
+
+test("migrateProject adds effects tracks to old projects", () => {
+  const p = project();
+  p.tracks = p.tracks.filter((t) => t.kind !== "fx");
+  T.migrateProject(p);
+  assert.equal(p.tracks.filter((t) => t.kind === "fx").length, 2);
+});

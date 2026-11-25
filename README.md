@@ -1,6 +1,6 @@
 # Claude Editor
 
-A non-linear video editor (think a lightweight DaVinci Resolve) with Claude built in as an editing assistant. Source files of any size work, including 500 MB, 5 GB or 50 GB, because **the video itself is never sent to Claude**.
+A non-linear video editor (think a lightweight DaVinci Resolve) with Claude built in as an editing assistant. It's tuned for fun, effects-heavy edits such as trading-card pack openings: Claude finds the big pulls and adds the flash, zoom, sound effects and slow-mo. Source files of any size work, including 500 MB, 5 GB or 50 GB, because **the video itself is never sent to Claude**.
 
 ![layout: media pool, viewer, Claude panel, multi-track timeline](docs/screenshot.png)
 
@@ -13,7 +13,8 @@ Your 20 GB file ──► FFmpeg (on your machine)
                      ├─ waveform          audio peaks
                      ├─ scene cuts        where shots change
                      ├─ silences          pauses in the audio
-                     ├─ keyframes         ~1 small JPEG per 8 s (up to 150/file)
+                     ├─ keyframes         1 JPEG per 2 s on short videos (up to 150/file)
+                     ├─ loud moments      reactions / hype points in the audio
                      └─ transcript        optional, with Whisper
                                    │
                                    ▼  (a few hundred KB)
@@ -31,6 +32,7 @@ Export ◄── FFmpeg renders the timeline from the ORIGINAL full-quality file
 
 | Source | Import | Prep (proxy and analysis) | Sent to Claude |
 |---|---|---|---|
+| 3 min pack opening, 720p | 0.09 s | 58 s | 90 frames + analysis (~2.5 MB) |
 | 2 min, 1080p, 569 MB | 0.09 s | 33 s | ~1 KB text + 24 frames (~320 KB) |
 | 20 min, 1080p, 1.2 GB | 0.09 s | 4 min 52 s | ~2 KB text + 140 frames (~1.9 MB) |
 
@@ -50,13 +52,22 @@ The design targets videos up to an hour or so. Longer ones work, but import take
 - Inspector: clip timing, source in/out, volume, fit or fill framing, title text and style, project format and frame rate (16:9, 9:16, 4:5, 1:1, 4K…)
 - Export: H.264/AAC MP4 at draft, standard or high quality, with progress and cancel
 
+**Effects** (✨ Effects and 🔊 Sounds menus, or ask Claude)
+- Zoom punch-in, camera shake, white flash, rainbow holo shimmer, blur, black & white, spotlight vignette. They sit on two effects tracks (FX1/FX2), with adjustable intensity.
+- Slow motion (any speed from 0.25× to 4×, pitch-corrected audio) and freeze frames. Later material shifts automatically to stay in sync.
+- "Impact" titles: big, bold, outlined, for hype moments.
+- 8 built-in sound effects, synthesized with FFmpeg so there's nothing to license: whoosh, sparkle chime, pop, bass boom, ka-ching, drumroll, tension riser, air horn.
+- Everything previews live in the viewer and renders identically in the export.
+
 **Claude assistant**
-- Ask in plain English: "remove the silences", "make a 60-second highlight", "vertical 9:16 version", "add chapter markers", "add a title for the first 3 seconds", "what's in this footage?"
-- Claude gets the timeline, scene cuts, silences, transcript (if available) and keyframe images. It replies with a plan built from 13 typed operations:
-  - `ripple_delete_ranges`, `lift_range`, `split`
-  - `insert_media`, `move_clip`, `trim_clip`, `delete_clip`
-  - `add_text`, `add_marker`
-  - `set_clip_volume`, `set_clip_fit`, `set_format`, `clear_timeline`
+- Ask in plain English: "hype my pulls", "which moments are my best pulls?", "cut the dead air", "make a 60-second vertical Short", "add chapter markers", "what's in this footage?"
+- For pack openings, Claude uses loud moments (your reactions), keyframes (one every 2 s on short videos, sharp enough to see the card) and scene changes. It times a build-up sound, then a flash, sparkle, zoom and freeze or slow-mo to each reveal. It won't guess card names it can't read.
+- Claude gets the timeline, scene cuts, silences, loud moments, transcript (if available) and keyframe images. It replies with a plan built from 18 typed operations:
+  - cutting: `ripple_delete_ranges`, `lift_range`, `split`, `delete_clip`, `clear_timeline`
+  - placing: `insert_media`, `move_clip`, `trim_clip`
+  - fun: `add_effect`, `add_sound`, `slow_motion`, `freeze_frame`, `set_clip_speed`, `add_text`
+  - other: `set_clip_volume`, `set_clip_fit`, `set_format`, `add_marker`
+- The footage block (analysis and keyframes) is sent first and prompt-cached, so follow-up requests on the same video cost much less.
 - Every plan is dry-run first. If an operation fails, Claude gets one chance to correct it. You see the plan with its before/after duration and click **Apply**. Undo works as usual.
 
 ## Requirements
@@ -126,6 +137,7 @@ test/                Unit tests for the timeline engine (npm test)
 ## Roadmap ideas
 
 - Package as a desktop app (Electron or Tauri) with a native file picker
+- Animated stickers / emoji pop-ups and particle effects (sparkles around a card)
 - Transitions (crossfades, dips to black) and audio fades
 - Speed changes, color correction and LUTs via FFmpeg filters
 - Word-level transcript editing (delete words to cut video)

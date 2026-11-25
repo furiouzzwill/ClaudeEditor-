@@ -1,7 +1,8 @@
 import { store } from "./state.js";
 import { api } from "./api.js";
 import { h, toast } from "./ui.js";
-import { applyOperations, timelineDuration } from "/shared/timeline.js";
+import { applyOperations, timelineDuration, withSoundStubs, EFFECT_TYPES, SOUND_EFFECTS } from "/shared/timeline.js";
+import { ensureSounds } from "./sounds.js";
 import { openSettings } from "./dialogs.js";
 
 const chatEl = document.getElementById("chat");
@@ -14,12 +15,12 @@ let busy = false;
 let aiConfigured = true;
 
 const CHIPS = [
-  ["Remove silences", "Remove the silent pauses from the timeline. Keep natural breathing room around speech."],
-  ["60s highlight", "Build a highlight cut under 60 seconds from the most interesting parts of my footage."],
-  ["Vertical 9:16", "Make this a vertical 9:16 video for Reels/TikTok/Shorts."],
-  ["Chapter markers", "Add chapter markers at the main topic or scene changes."],
-  ["Add a title", "Add an opening title card for the first 3 seconds."],
-  ["Describe my footage", "Describe what's in my footage and suggest how to edit it."],
+  ["✨ Hype my pulls", "Find the best card pulls in this pack opening and hype them up: build-up sound before each reveal, flash and sparkle at the reveal, zoom in on the card, and a freeze frame or slow motion on the biggest hit. Keep regular cards clean."],
+  ["Find my best pulls", "Which moments look like my best pulls? List them with timestamps and what you can see, but don't change anything yet."],
+  ["Cut dead air", "Remove the silent pauses and slow parts between cards. Keep natural breathing room around speech."],
+  ["60s Short", "Make a vertical 9:16 Short under 60 seconds: a quick intro, then the best pulls with effects."],
+  ["Hype title", "Add a big impact title at the start."],
+  ["Chapter markers", "Add chapter markers at each pack and each big pull."],
 ];
 
 function describeOp(o) {
@@ -38,12 +39,17 @@ function describeOp(o) {
       const m = store.project.media.find((x) => x.id === o.mediaId);
       return `Insert ${m?.name || o.mediaId} ${t(o.sourceIn)}–${t(o.sourceOut)} ${o.start == null ? "at end" : `at ${t(o.start)}`}${o.trackId ? ` on ${o.trackId}` : ""}`;
     }
-    case "add_text": return `Title “${o.text}” ${t(o.start)}–${t(o.end)} (${o.position})`;
+    case "add_text": return `${o.look === "impact" ? "💥 Impact title" : "Title"} “${o.text}” ${t(o.start)}–${t(o.end)}`;
     case "set_clip_volume": return `Set ${o.clipId} volume to ${Math.round(o.volume * 100)}%`;
     case "set_clip_fit": return `Set ${o.clipId} framing to ${o.fit}`;
     case "set_format": return `Change format to ${o.width ?? "same"}×${o.height ?? "same"}${o.fps ? ` @ ${o.fps}fps` : ""}`;
     case "add_marker": return `Marker at ${t(o.time)}: ${o.label}`;
     case "clear_timeline": return o.trackId ? `Clear track ${o.trackId}` : "Clear the timeline";
+    case "add_effect": return `✨ ${EFFECT_TYPES[o.type]?.label || o.type} ${t(o.start)}–${t(o.end)}${o.intensity ? ` (${Math.round(o.intensity * 100)}%)` : ""}`;
+    case "add_sound": return `🔊 ${SOUND_EFFECTS[o.sound]?.label || o.sound} at ${t(o.time)}`;
+    case "slow_motion": return `🐢 Slow motion ${o.speed}× ${t(o.start)}–${t(o.end)}`;
+    case "freeze_frame": return `❄ Freeze frame at ${t(o.time)} for ${t(o.duration)}`;
+    case "set_clip_speed": return `Set ${o.clipId} speed to ${o.speed}×`;
     default: return o.op;
   }
 }
@@ -105,8 +111,13 @@ function update(i, fields) {
   render();
 }
 
-function apply(i) {
+async function apply(i) {
   const turn = store.project.chat[i];
+  try {
+    await ensureSounds(turn.operations.filter((o) => o.op === "add_sound").map((o) => o.sound));
+  } catch (e) {
+    toast("Couldn't add sound effects: " + e.message, { error: true });
+  }
   const res = store.applyOps(turn.operations);
   if (res.error) toast(res.error, { error: true });
   update(i, { applied: res.applied.length > 0 });
@@ -130,7 +141,7 @@ async function send(text) {
       project: { clips: store.project.clips, tracks: store.project.tracks, markers: store.project.markers, settings: store.project.settings, chat: history },
     });
     // Re-check against the timeline as it is now (the user may have edited meanwhile).
-    const dry = applyOperations(store.project, res.operations);
+    const dry = applyOperations(withSoundStubs(store.project, res.operations), res.operations);
     store.setChat([
       ...store.project.chat,
       {

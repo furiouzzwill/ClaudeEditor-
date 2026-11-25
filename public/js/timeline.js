@@ -1,17 +1,18 @@
 import { store } from "./state.js";
 import {
   clipDuration, clipEnd, mediaById, trackById, placeClip, splitAt, trimClip,
-  formatTimecode, snapToFrame, uid,
+  formatTimecode, snapToFrame, uid, speedOf, EFFECT_TYPES,
 } from "/shared/timeline.js";
 
 const HEADER_W = 92;
 const RULER_H = 28;
-const TRACK_H = { text: 34, video: 66, audio: 50 };
+const TRACK_H = { fx: 24, text: 30, video: 58, audio: 42 };
 const EDGE = 7; // px grab zone for trimming
 const COLORS = {
   video: ["#2d5488", "#3d6fb0", "#5a8ed1"],
   audio: ["#2c6a46", "#3f8f5e", "#5bb37f"],
   text: ["#5a4290", "#7a5bb5", "#9c7fd6"],
+  fx: ["#8a4a1f", "#c8682c", "#f0995a"],
 };
 
 const canvas = document.getElementById("timeline");
@@ -308,7 +309,7 @@ function draw() {
     if (h > 40) {
       ctx.fillStyle = "#8d8f99";
       ctx.font = "11px Inter, system-ui, sans-serif";
-      ctx.fillText(track.kind === "video" ? "Video" : track.kind === "audio" ? "Audio" : "Titles", 12, y + h / 2 + 9);
+      ctx.fillText(track.kind === "video" ? "Video" : track.kind === "audio" ? "Audio" : track.kind === "fx" ? "Effects" : "Titles", 12, y + h / 2 + 9);
     }
   }
   ctx.strokeStyle = "#2b2c33";
@@ -423,21 +424,21 @@ function drawClip(c, track, y, h, { ghost = false, dim = false } = {}) {
       const tw = Math.max(20, stripH * aspect);
       const startTile = Math.floor((visX0 - x0) / tw);
       for (let tx = x0 + startTile * tw; tx < visX1; tx += tw) {
-        const srcT = c.in + (tx - x0) / pps;
+        const srcT = c.hold ? c.holdAt : c.in + ((tx - x0) / pps) * speedOf(c);
         const n = Math.min(media.thumbCount, Math.max(1, Math.floor(srcT / media.thumbInterval) + 1));
         const img = thumb(media, n);
         if (img) ctx.drawImage(img, tx, top + 16, tw, stripH);
       }
     }
     // Waveform at the bottom
-    if (media.hasAudio && (c.volume ?? 1) > 0) drawWave(c, media, visX0, visX1, x0, top + hh - 14, 14, "rgba(255,255,255,0.55)");
+    if (media.hasAudio && (c.volume ?? 1) > 0 && !c.hold) drawWave(c, media, visX0, visX1, x0, top + hh - 14, 14, "rgba(255,255,255,0.55)");
     ctx.fillStyle = base;
     ctx.fillRect(x0, top, w, 16);
   } else if (track.kind === "audio" && media) {
     ctx.fillStyle = base;
     ctx.fillRect(x0, top, w, 15);
     drawWave(c, media, visX0, visX1, x0, top + 15, hh - 15, light);
-  } else if (track.kind === "text") {
+  } else if (track.kind === "text" || track.kind === "fx") {
     ctx.fillStyle = base;
     ctx.fillRect(x0, top, w, hh);
   }
@@ -447,10 +448,18 @@ function drawClip(c, track, y, h, { ghost = false, dim = false } = {}) {
     ctx.fillStyle = "#fff";
     ctx.font = "11px Inter, system-ui, sans-serif";
     ctx.textBaseline = "middle";
-    const label = track.kind === "text" ? "T  " + (c.text || "").replace(/\n/g, " ") : media?.name || "Missing media";
-    ctx.fillText(label, Math.max(x0, HEADER_W) + 6, top + (track.kind === "text" ? hh / 2 : 8), Math.max(10, visX1 - Math.max(x0, HEADER_W) - 10));
+    const label =
+      track.kind === "text"
+        ? "T  " + (c.text || "").replace(/\n/g, " ")
+        : track.kind === "fx"
+          ? "✦ " + (EFFECT_TYPES[c.effect?.type]?.label || c.effect?.type || "Effect")
+          : c.hold
+            ? "❄ Freeze frame"
+            : (media?.sfx ? "🔊 " : "") + (media?.name?.replace(/^SFX · /, "") || "Missing media") + (speedOf(c) !== 1 ? `  ·  ${speedOf(c)}×` : "");
+    const centered = track.kind === "text" || track.kind === "fx";
+    ctx.fillText(label, Math.max(x0, HEADER_W) + 6, top + (centered ? hh / 2 : 8), Math.max(10, visX1 - Math.max(x0, HEADER_W) - 10));
   }
-  if ((c.volume ?? 1) !== 1 && w > 60 && track.kind !== "text") {
+  if ((c.volume ?? 1) !== 1 && w > 60 && track.kind !== "text" && track.kind !== "fx" && !c.hold) {
     ctx.fillStyle = "rgba(0,0,0,0.5)";
     const txt = c.volume === 0 ? "muted" : `${Math.round(c.volume * 100)}%`;
     ctx.font = "10px Inter, sans-serif";
@@ -481,8 +490,9 @@ function drawWave(c, media, visX0, visX1, x0, y, h, color) {
   const vol = Math.min(2, c.volume ?? 1);
   ctx.fillStyle = color;
   for (let x = Math.floor(visX0); x < visX1; x += 2) {
-    const sa = c.in + (x - x0) / pps;
-    const sb = c.in + (x + 2 - x0) / pps;
+    const sp = speedOf(c);
+    const sa = c.in + ((x - x0) / pps) * sp;
+    const sb = c.in + ((x + 2 - x0) / pps) * sp;
     let a = Math.floor(sa * wv.rate);
     const b = Math.max(a + 1, Math.floor(sb * wv.rate));
     let peak = 0;
@@ -604,22 +614,23 @@ window.addEventListener("mousemove", (e) => {
     redraw();
   } else if (drag.type === "trim") {
     const c = drag.clip;
-    const media = c.mediaId ? mediaById(p, c.mediaId) : null;
+    const media = c.mediaId && !c.hold ? mediaById(p, c.mediaId) : null;
+    const sp = speedOf(c);
     const neighbors = p.clips.filter((o) => o.trackId === c.trackId && o.id !== c.id);
     let t = snap((drag.edge === "left" ? c.start : clipEnd(c)) + dx / pps, snapPoints(new Set([c.id])));
     drag.snapLine = null;
     let next = { ...c };
     if (drag.edge === "left") {
       const prevEnd = Math.max(0, ...neighbors.filter((o) => clipEnd(o) <= c.start + 1e-6).map(clipEnd));
-      const minStart = media ? Math.max(prevEnd, c.start - c.in) : prevEnd;
+      const minStart = media ? Math.max(prevEnd, c.start - c.in / sp) : prevEnd;
       t = frameSnap(Math.max(minStart, Math.min(t, clipEnd(c) - 1 / fps())));
       const delta = t - c.start;
-      next = media ? { ...c, start: t, in: c.in + delta } : { ...c, start: t, in: 0, out: c.out - delta };
+      next = media ? { ...c, start: t, in: c.in + delta * sp } : { ...c, start: t, in: 0, out: c.out - delta };
     } else {
       const nextStart = Math.min(Infinity, ...neighbors.filter((o) => o.start >= clipEnd(c) - 1e-6).map((o) => o.start));
-      const maxEnd = media ? Math.min(nextStart, c.start + (media.duration - c.in)) : nextStart;
+      const maxEnd = media ? Math.min(nextStart, c.start + (media.duration - c.in) / sp) : nextStart;
       t = frameSnap(Math.min(maxEnd, Math.max(t, c.start + 1 / fps())));
-      next = { ...c, out: c.in + (t - c.start) };
+      next = { ...c, out: c.in + (t - c.start) * (media ? sp : 1) };
     }
     if (Math.abs(t - (drag.edge === "left" ? next.start : clipEnd(next))) < 1e-6) drag.snapLine = t;
     drag.preview = next;
@@ -689,7 +700,7 @@ canvas.addEventListener("dragover", (e) => {
   const { x, y } = pointer(e);
   let lay = trackAt(y);
   let kind = lay?.track.kind;
-  if (!lay || kind === "text" || (kind === "video" && !media.hasVideo)) {
+  if (!lay || kind === "text" || kind === "fx" || (kind === "video" && !media.hasVideo)) {
     lay = trackLayout().find((l) => l.track.kind === (media.hasVideo ? "video" : "audio") && l.track.id.endsWith("1"));
   }
   const dur = media.duration;
