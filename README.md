@@ -79,7 +79,7 @@ The design targets videos up to an hour or so. Longer ones work, but import take
      - Windows, in PowerShell: `winget install Gyan.FFmpeg`
      - Mac, after installing [Homebrew](https://brew.sh): `brew install ffmpeg`
 3. **Start it:** double-click **`Start Claude Editor (Windows).bat`** or **`Start Claude Editor (Mac).command`**. The first start installs a few packages (about a minute). Your browser then opens to the editor. Keep the black window open while you edit.
-   - On a Mac, if it says the file can't be opened, right-click it, choose **Open**, then **Open** again.
+   - On a Mac, if it says Apple "could not verify" the file, click **Done**. Then either go to **System Settings → Privacy & Security**, scroll down and click **Open Anyway**, or start it from Terminal instead: type `cd ` (with a space), drag the unzipped folder into the Terminal window, press Return, then run `bash "Start Claude Editor (Mac).command"`.
 4. **Add your Claude API key:** click ⚙ in the top right. Get a key at [console.anthropic.com](https://console.anthropic.com). Usage there is billed separately from a Claude.ai subscription.
 
 ## Requirements
