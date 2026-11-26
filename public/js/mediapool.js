@@ -67,7 +67,11 @@ export function render() {
         h("span", { class: "dur" }, fmtDur(m.duration))
       ),
       !ready && m.status !== "error" ? h("div", { class: "progress" }, h("i", { style: { width: `${Math.round((m.progress || 0) * 100)}%` } })) : null,
-      h("div", { class: "meta" }, h("div", { class: "name" }, m.name), h("div", { class: "sub" }, sub)),
+      h("div", { class: "meta" },
+        h("div", { class: "name" }, m.name),
+        h("div", { class: "sub" }, sub),
+        transcriptLine(m)
+      ),
       h("button", {
         class: "x",
         title: "Remove from project (your original file is not touched)",
@@ -87,6 +91,28 @@ export function render() {
     );
     grid.append(card);
   }
+}
+
+// Transcript status / button (transcripts let the assistant edit by what's said).
+function transcriptLine(m) {
+  if (m.status !== "ready" || !m.hasAudio || m.sfx) return null;
+  if (m.analysis?.transcript != null) return h("div", { class: "sub ok" }, `✓ Transcript (${m.analysis.transcript} lines)`);
+  if (m.transcribing) return h("div", { class: "sub" }, "Transcribing… (see progress at the top)");
+  return h("button", {
+    class: "btn small-btn",
+    title: m.transcriptError ? "Last attempt failed: " + m.transcriptError : "Transcribe the speech so Claude can edit by what's said",
+    onclick: async (e) => {
+      e.stopPropagation();
+      e.currentTarget.disabled = true;
+      try {
+        await api.post(`/api/projects/${store.project.id}/media/${m.id}/transcribe`);
+        await store.refreshMedia();
+      } catch (err) {
+        toast(err.message, { error: true, ms: 9000 });
+        e.currentTarget.disabled = false;
+      }
+    },
+  }, m.transcriptError ? "⚠ Retry transcript" : "📝 Transcribe");
 }
 
 export async function uploadFiles(files) {

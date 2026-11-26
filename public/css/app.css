@@ -102,6 +102,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .media-card .x { position: absolute; top: 4px; right: 4px; background: rgba(0, 0, 0, 0.65); border: 0; border-radius: 4px; width: 20px; height: 20px; display: none; cursor: pointer; color: #fff; line-height: 20px; padding: 0; }
 .media-card:hover .x { display: block; }
 .media-card.error .sub { color: #ff8b8e; }
+.media-card .sub.ok { color: var(--green-2); }
+.media-card .small-btn { margin-top: 5px; padding: 2px 8px; font-size: 11px; width: 100%; }
 
 /* ---- viewer ---- */
 .stage-wrap { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; background: #0a0a0c; padding: 12px; }

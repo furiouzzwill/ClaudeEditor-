@@ -131,7 +131,7 @@ app.post("/api/projects/:id/media/:mid/reprocess", wrap(async (req, res) => {
 }));
 
 app.post("/api/projects/:id/media/:mid/transcribe", wrap(async (req, res) => {
-  if (!whisperAvailable()) throw Object.assign(new Error("Whisper isn't installed. Run: pip install -U openai-whisper"), { status: 400 });
+  if (!whisperAvailable()) throw Object.assign(new Error("Whisper isn't installed. On a Mac run: brew install openai-whisper (or: pip install -U openai-whisper), then try again."), { status: 400 });
   const p = await store.getProject(req.params.id);
   const m = p.media.find((x) => x.id === req.params.mid);
   if (!m) throw Object.assign(new Error("Media not found"), { status: 404 });

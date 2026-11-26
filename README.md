@@ -25,7 +25,11 @@
    - On Linux, or if you prefer the terminal: `npm install && npm start`, then open http://localhost:5317.
 4. **Add your Anthropic API key** for the assistant: click ⚙ in the top right. Get a key at [console.anthropic.com](https://console.anthropic.com). API usage is billed by Anthropic to your account, separately from any Claude.ai subscription. The editor itself works without a key.
 
-Optional: install [Whisper](https://github.com/openai/whisper) (`pip install -U openai-whisper`) for transcripts. The assistant can then edit by what's said ("cut the part where I talk about pricing").
+**Recommended for talking videos:** install [Whisper](https://github.com/openai/whisper) for transcripts:
+- Mac: `brew install openai-whisper`
+- Elsewhere: `pip install -U openai-whisper`
+
+Then click **📝 Transcribe** on a video in the media pool. With a transcript the assistant can edit by what's said ("cut the part where I talk about pricing"), add captions, and title your key points. The first run downloads a speech model (about 140 MB).
 
 ## Using the assistant
 

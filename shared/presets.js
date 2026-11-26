@@ -53,9 +53,12 @@ export const VIDEO_TYPES = {
     guidance: `This is a vlog or talking-head video.
 - Jump cuts are normal: remove pauses, ums and false starts tightly, keeping ~0.1s of breathing room.
 - Keep the speaker engaging with occasional subtle zoom punch-ins (intensity ~0.12-0.2) on key sentences, alternating zoomed and not so cuts feel fresh. Don't zoom constantly.
-- Use captions or titles to emphasize key points if there's a transcript. Big effects and loud sounds are usually wrong here; a pop or whoosh on a topic change is plenty.`,
+- Use captions or titles to emphasize key points if there's a transcript. Big effects and loud sounds are usually wrong here; a pop or whoosh on a topic change is plenty.
+- Captions: one add_text per short phrase (3-8 words, "caption" look, bottom), timed to the timeline transcript, with no overlaps.
+- Without a transcript you can only see pauses, loudness and frames, not what's being said. For anything that depends on the words, say so and suggest clicking "📝 Transcribe" on the video in the media pool.`,
     chips: [
       ["Tighten jump cuts", "Remove pauses, ums and false starts with tight jump cuts. Keep it natural."],
+      ["Add captions", "Add captions for everything I say, in short readable phrases at the bottom of the screen."],
       ["Subtle punch-ins", "Add subtle zoom punch-ins on key moments to keep it engaging. Don't overdo it."],
       ["Vertical Short", "Make a vertical 9:16 Short under 60 seconds from the strongest part."],
       ["Key-point titles", "Add short titles for the main points I make."],

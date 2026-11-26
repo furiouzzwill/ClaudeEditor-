@@ -332,13 +332,14 @@ const round = (t) => Math.round(t * 1000) / 1000;
 
 // ---- optional transcription (OpenAI Whisper CLI, runs locally) -------------
 
-let whisperChecked = null;
+// Re-checked until found, so installing Whisper doesn't need a restart.
+let whisperFound = false;
 export function whisperAvailable() {
-  if (whisperChecked === null) {
+  if (!whisperFound) {
     const cmd = process.env.WHISPER_CMD || "whisper";
-    whisperChecked = spawnSync(cmd, ["--help"], { stdio: "ignore" }).status === 0;
+    whisperFound = spawnSync(cmd, ["--help"], { stdio: "ignore" }).status === 0;
   }
-  return whisperChecked;
+  return whisperFound;
 }
 
 export function queueTranscribe(projectId, media) {
@@ -346,6 +347,20 @@ export function queueTranscribe(projectId, media) {
     "transcribe",
     `Transcribing ${media.name}`,
     async (ctx) => {
+      await setMedia(projectId, media.id, { transcribing: true, transcriptError: null });
+      try {
+        await transcribe(ctx);
+      } catch (e) {
+        await setMedia(projectId, media.id, { transcribing: false, transcriptError: e.message.slice(0, 300) });
+        throw e;
+      }
+      await setMedia(projectId, media.id, { transcribing: false });
+    },
+    { refId: media.id }
+  );
+
+  async function transcribe(ctx) {
+    {
       const dir = mediaDir(media.id);
       const tdir = path.join(dir, "whisper");
       await fsp.mkdir(tdir, { recursive: true });
@@ -375,9 +390,8 @@ export function queueTranscribe(projectId, media) {
       await fsp.writeFile(analysisFile, JSON.stringify(analysis));
       await fsp.rm(audio, { force: true });
       await setMedia(projectId, media.id, { analysis: summarize({ scenes: [], silences: [], keyframes: [], ...analysis }) });
-    },
-    { refId: media.id }
-  );
+    }
+  }
 }
 
 export async function getAnalysis(mediaId) {
