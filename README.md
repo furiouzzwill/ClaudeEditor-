@@ -70,6 +70,18 @@ The design targets videos up to an hour or so. Longer ones work, but import take
 - The footage block (analysis and keyframes) is sent first and prompt-cached, so follow-up requests on the same video cost much less.
 - Every plan is dry-run first. If an operation fails, Claude gets one chance to correct it. You see the plan with its before/after duration and click **Apply**. Undo works as usual.
 
+## Download and run (the easy way)
+
+1. **Download:** open the repository on GitHub, switch to the `claude/gallant-cori-wg5ia2` branch, then click **Code → Download ZIP**. Unzip it somewhere, like your Documents folder.
+2. **Install the two tools it needs** (one time only):
+   - **Node.js:** from [nodejs.org](https://nodejs.org), click the LTS button and run the installer.
+   - **FFmpeg:**
+     - Windows, in PowerShell: `winget install Gyan.FFmpeg`
+     - Mac, after installing [Homebrew](https://brew.sh): `brew install ffmpeg`
+3. **Start it:** double-click **`Start Claude Editor (Windows).bat`** or **`Start Claude Editor (Mac).command`**. The first start installs a few packages (about a minute). Your browser then opens to the editor. Keep the black window open while you edit.
+   - On a Mac, if it says the file can't be opened, right-click it, choose **Open**, then **Open** again.
+4. **Add your Claude API key:** click ⚙ in the top right. Get a key at [console.anthropic.com](https://console.anthropic.com). Usage there is billed separately from a Claude.ai subscription.
+
 ## Requirements
 
 - **Node.js 20+**
