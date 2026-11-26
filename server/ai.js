@@ -42,9 +42,8 @@ const opSchema = (name, description, props = {}) => ({
   required: ["op", ...Object.keys(props)],
   additionalProperties: false,
 });
-// Structured outputs compile the schema to a grammar, and union types are
-// expensive there, so "not set" is expressed with plain defaults ("" / -1 / 0)
-// instead of nullable fields. normalizeOp() turns them back into nulls.
+// "Not set" is expressed with plain defaults ("" / -1 / 0) instead of nullable
+// fields; normalizeOp() turns them (or omitted fields) back into nulls.
 const OPERATIONS_SCHEMA = {
   anyOf: [
     opSchema("ripple_delete_ranges", "Remove timeline ranges on all tracks and close the gaps. All ranges refer to the timeline as it is right before this operation; they may be listed in any order.", {
@@ -308,12 +307,29 @@ export async function aiStatus() {
   };
 }
 
+// The plan comes back as a call to this tool. A tool (not strict, not
+// output_config.format) is used on purpose: those modes compile the schema
+// into a grammar, and an 18-operation plan schema is over the API's grammar
+// size limit. The editor validates and dry-runs every plan itself instead.
+const PLAN_TOOL = {
+  name: "propose_edit_plan",
+  description:
+    "Propose an edit plan for the user to review. Always call this tool to reply, including for questions (answer in `message` with an empty `operations` list).",
+  input_schema: PLAN_SCHEMA,
+  // Stream the (possibly long) operations list as it is generated.
+  eager_input_streaming: true,
+};
+
+// Returns { plan, invalid, content, toolUseId, usage, model }. `invalid` is set
+// when Claude's tool input didn't validate (it gets a chance to fix it).
 async function callClaude(anthropic, model, system, messages) {
   const stream = anthropic.beta.messages.stream({
     model,
     max_tokens: 64000,
     thinking: { type: "adaptive" },
-    output_config: { effort: "high", format: { type: "json_schema", schema: PLAN_SCHEMA } },
+    output_config: { effort: "high" },
+    tools: [PLAN_TOOL],
+    tool_choice: { type: "auto" },
     // If the primary model declines a request, let the API retry it on a
     // fallback model inside the same call.
     betas: ["server-side-fallback-2026-07-01"],
@@ -321,7 +337,7 @@ async function callClaude(anthropic, model, system, messages) {
     // Base instructions are cached; the video-type guidance follows them.
     system: [
       { type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } },
-      { type: "text", text: system },
+      { type: "text", text: system + "\n\nReply by calling the propose_edit_plan tool." },
     ],
     messages,
   });
@@ -333,15 +349,20 @@ async function callClaude(anthropic, model, system, messages) {
   if (msg.stop_reason === "max_tokens") {
     throw Object.assign(new Error("Claude's plan was too long and got cut off. Try a narrower request."), { status: 422 });
   }
-  const text = msg.content.filter((b) => b.type === "text").map((b) => b.text).join("");
-  let parsed;
-  try {
-    parsed = PlanZ.parse(JSON.parse(text));
-  } catch (e) {
-    throw Object.assign(new Error("Claude returned a plan the editor couldn't read: " + e.message.slice(0, 300)), { status: 502 });
+  const base = { content: msg.content, usage: msg.usage, model: msg.model };
+  const call = msg.content.find((b) => b.type === "tool_use" && b.name === PLAN_TOOL.name);
+  const text = msg.content.filter((b) => b.type === "text").map((b) => b.text).join("").trim();
+  if (!call) {
+    // Plain-text reply (e.g. a question answered without calling the tool).
+    return { ...base, plan: { message: text || "(no reply)", operations: [] }, invalid: null, toolUseId: null };
   }
-  parsed.operations = parsed.operations.map(normalizeOp);
-  return { plan: parsed, raw: text, usage: msg.usage, model: msg.model };
+  const parsed = PlanZ.safeParse(call.input);
+  if (!parsed.success) {
+    const why = parsed.error.issues.slice(0, 5).map((i) => `${i.path.join(".")}: ${i.message}`).join("; ");
+    return { ...base, plan: null, invalid: why || "invalid plan", toolUseId: call.id };
+  }
+  const plan = { message: parsed.data.message || text, operations: parsed.data.operations.map(normalizeOp) };
+  return { ...base, plan, invalid: null, toolUseId: call.id };
 }
 
 export async function planEdit(project, { request, playhead = null, selectedClipId = null }) {
@@ -377,20 +398,34 @@ export async function planEdit(project, { request, playhead = null, selectedClip
   ];
   let result = await callClaude(anthropic, model, typeGuidance, messages);
 
-  // Dry-run the plan. If an operation fails, give Claude one chance to fix it.
+  // Validate and dry-run the plan. If it doesn't parse or an operation fails,
+  // tell Claude what went wrong (as the tool's result) and let it fix it once.
   const dryRun = (ops) => applyOperations(withSoundStubs(project, ops), ops);
-  let dry = dryRun(result.plan.operations);
-  if (dry.error) {
+  let dry = result.plan ? dryRun(result.plan.operations) : null;
+  const problem = result.invalid
+    ? `The plan didn't match the tool's schema: ${result.invalid}`
+    : dry.error
+      ? `That plan failed when the editor dry-ran it: ${dry.error}`
+      : null;
+  if (problem && result.toolUseId) {
     const retry = await callClaude(anthropic, model, typeGuidance, [
       ...messages,
-      { role: "assistant", content: result.raw },
-      { role: "user", content: `That plan failed when the editor dry-ran it: ${dry.error}\nReturn a corrected complete plan.` },
+      { role: "assistant", content: result.content },
+      {
+        role: "user",
+        content: [{ type: "tool_result", tool_use_id: result.toolUseId, is_error: true, content: `${problem}\nCall propose_edit_plan again with a corrected complete plan.` }],
+      },
     ]);
-    const dry2 = dryRun(retry.plan.operations);
-    if (!dry2.error || dry2.applied.length > dry.applied.length) {
-      result = retry;
-      dry = dry2;
+    if (retry.plan) {
+      const dry2 = dryRun(retry.plan.operations);
+      if (!result.plan || !dry2.error || dry2.applied.length > dry.applied.length) {
+        result = retry;
+        dry = dry2;
+      }
     }
+  }
+  if (!result.plan) {
+    throw Object.assign(new Error("Claude's plan couldn't be read, even after a retry: " + result.invalid), { status: 502 });
   }
 
   return {

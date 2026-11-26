@@ -58,7 +58,7 @@ The assistant's schema picks up new effect types automatically.
 
 Please keep sounds synthesized (or CC0 with attribution) so there's nothing to license.
 
-**A new assistant operation:** implement it in `applyOperation` in `shared/timeline.js` and add a test. Then add its schema in `OPERATIONS_SCHEMA` and its required fields in `PlanZ` (both in `server/ai.js`), and a description in `describeOp` in `public/js/assistant.js`. Keep schema fields required with plain defaults ("" / 0 / -1) rather than nullable unions: structured outputs limit union types.
+**A new assistant operation:** implement it in `applyOperation` in `shared/timeline.js` and add a test. Then add its schema in `OPERATIONS_SCHEMA` and its required fields in `PlanZ` (both in `server/ai.js`), and a description in `describeOp` in `public/js/assistant.js`. The plan schema is sent as a regular (non-strict) tool, `propose_edit_plan`, not as `output_config.format` or a strict tool. Those modes compile the schema into a grammar, and a schema this size goes over the API's grammar limit ("The compiled grammar is too large"). The editor validates every plan with zod and dry-runs it instead, so keep the `PlanZ` checks in step with the schema.
 
 ## Pull requests
 
