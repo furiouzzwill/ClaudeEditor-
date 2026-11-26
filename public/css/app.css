@@ -145,6 +145,8 @@ button, input, select, textarea { font: inherit; color: inherit; }
 .plan .actions { display: flex; gap: 6px; }
 .plan .status { font-size: 12px; color: var(--green-2); }
 .plan .warn { font-size: 12px; color: #ffb38a; margin-bottom: 6px; }
+.type-bar { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 12px; color: var(--muted); }
+.type-bar select { flex: 1; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 8px; color: var(--text); }
 .chips { display: flex; flex-wrap: wrap; gap: 6px; padding: 0 12px 8px; }
 .chip { background: var(--panel-2); border: 1px solid var(--line); border-radius: 999px; padding: 4px 10px; font-size: 12px; cursor: pointer; }
 .chip:hover { border-color: var(--accent); }

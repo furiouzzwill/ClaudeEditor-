@@ -13,6 +13,7 @@ import { planEdit, aiStatus, DEFAULT_MODEL } from "./ai.js";
 import { run, FFMPEG } from "./ffmpeg.js";
 import { uid, SOUND_EFFECTS } from "../shared/timeline.js";
 import { sfxFile } from "./sfx.js";
+import { APP_NAME } from "../shared/brand.js";
 
 const PORT = Number(process.env.PORT || 5317);
 const HOST = process.env.HOST || "127.0.0.1";
@@ -284,6 +285,6 @@ async function resumeInterrupted() {
 }
 
 app.listen(PORT, HOST, () => {
-  console.log(`\n  Claude Editor running at http://localhost:${PORT}\n  Data folder: ${store.DATA}\n`);
+  console.log(`\n  ${APP_NAME} running at http://localhost:${PORT}\n  Data folder: ${store.DATA}\n`);
   resumeInterrupted().catch((e) => console.error("resume failed:", e.message));
 });

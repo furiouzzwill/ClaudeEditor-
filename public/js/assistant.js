@@ -3,6 +3,7 @@ import { api } from "./api.js";
 import { h, toast } from "./ui.js";
 import { applyOperations, timelineDuration, withSoundStubs, EFFECT_TYPES, SOUND_EFFECTS } from "/shared/timeline.js";
 import { ensureSounds } from "./sounds.js";
+import { VIDEO_TYPES, videoTypeOf } from "/shared/presets.js";
 import { openSettings } from "./dialogs.js";
 
 const chatEl = document.getElementById("chat");
@@ -14,14 +15,23 @@ const sendBtn = document.getElementById("btnSend");
 let busy = false;
 let aiConfigured = true;
 
-const CHIPS = [
-  ["✨ Hype my pulls", "Find the best card pulls in this pack opening and hype them up: build-up sound before each reveal, flash and sparkle at the reveal, zoom in on the card, and a freeze frame or slow motion on the biggest hit. Keep regular cards clean."],
-  ["Find my best pulls", "Which moments look like my best pulls? List them with timestamps and what you can see, but don't change anything yet."],
-  ["Cut dead air", "Remove the silent pauses and slow parts between cards. Keep natural breathing room around speech."],
-  ["60s Short", "Make a vertical 9:16 Short under 60 seconds: a quick intro, then the best pulls with effects."],
-  ["Hype title", "Add a big impact title at the start."],
-  ["Chapter markers", "Add chapter markers at each pack and each big pull."],
-];
+const typeSelect = document.getElementById("videoType");
+for (const [id, t] of Object.entries(VIDEO_TYPES)) typeSelect.append(h("option", { value: id }, t.label));
+typeSelect.addEventListener("change", () => {
+  store.commit({ ...store.project, settings: { ...store.project.settings, videoType: typeSelect.value } });
+});
+
+// Quick actions come from the project's video type.
+let chipsType = null;
+function renderChips() {
+  const type = videoTypeOf(store.project);
+  chipsType = type;
+  typeSelect.value = type;
+  chipsEl.innerHTML = "";
+  for (const [label, prompt] of VIDEO_TYPES[type].chips) {
+    chipsEl.append(h("button", { class: "chip", type: "button", title: prompt, onclick: () => send(prompt) }, label));
+  }
+}
 
 function describeOp(o) {
   const t = (x) => (x == null ? "" : `${Number(x).toFixed(2)}s`);
@@ -67,8 +77,9 @@ function render() {
   } else if (!chat.length) {
     chatEl.append(
       h("div", { class: "msg system" },
-        "Ask Claude to edit your timeline. It sees scene cuts, silences, transcripts (if Whisper is installed) and keyframes, ",
-        "never the video file itself, so file size doesn't matter. Every plan is shown to you before it's applied."
+        "Ask Claude to edit your timeline, or pick a quick action below. Set the video type above so its suggestions fit your content. ",
+        "Claude sees scene cuts, silences, loud moments, transcripts (if Whisper is installed) and keyframes, never the video file itself. ",
+        "Every plan is shown to you before it's applied."
       )
     );
   }
@@ -171,9 +182,8 @@ input.addEventListener("keydown", (e) => {
   }
 });
 
-for (const [label, prompt] of CHIPS) {
-  chipsEl.append(h("button", { class: "chip", type: "button", onclick: () => send(prompt) }, label));
-}
+store.on("project", renderChips);
+store.on("change", () => store.project && chipsType !== videoTypeOf(store.project) && renderChips());
 
 async function checkStatus() {
   try {

@@ -22,6 +22,8 @@ import {
   applyOperations, clipEnd, mapSourceIntervals, mapSourcePoint, timelineDuration, speedOf,
   EFFECT_TYPES, SOUND_EFFECTS, withSoundStubs,
 } from "../shared/timeline.js";
+import { VIDEO_TYPES, videoTypeOf } from "../shared/presets.js";
+import { APP_NAME } from "../shared/brand.js";
 
 export const DEFAULT_MODEL = "claude-opus-5-5";
 // ~440 tokens per keyframe; a 3-minute video sends ~90 of them.
@@ -150,7 +152,7 @@ const PlanZ = z.object({
 // Prompt
 // ---------------------------------------------------------------------------
 
-const SYSTEM = `You are the editing assistant inside Claude Editor, a non-linear video editor. You help the user cut, arrange and polish their videos, and add fun effects, by proposing edit plans.
+const SYSTEM = `You are the editing assistant inside ${APP_NAME}, a non-linear video editor. You help the user cut, arrange and polish their videos, and add fun effects, by proposing edit plans.
 
 You cannot play the video. You see a description of it: per-media analysis (scene cuts, silences, loud moments, and a transcript when one exists), keyframe images labeled with their source time, and the timeline as JSON. Judge visuals from the keyframes, and be upfront when something depends on detail the samples can't show.
 
@@ -170,11 +172,10 @@ How to plan:
 - If the request is a question, or is too ambiguous to act on, answer in "message" with an empty operations list.
 - Keep "message" short: what you changed and why, or what you need. Plain text, no markdown headings.
 
-Fun effects, and pack-opening videos in particular:
-- Trading-card pack openings follow a rhythm: intro, opening the pack, then flipping through cards one at a time, with the rare "hit" cards usually near the back. The user's reaction (louder voice, "let's go!", "no way!") often follows a big pull, so loud moments are strong clues. Confirm with the keyframes: look for a shiny, full-art, holographic or otherwise special card being held up.
-- A good hype treatment for a hit card, timed to the reveal: a tension riser or drumroll starting ~1.5-2s before; at the reveal a short flash (0.2-0.4s) plus a sparkle or ka-ching sound; a zoom punch-in (1.5-3s, starting at the reveal); then optionally a 1-1.5s freeze frame or ~0.5x slow motion. Add an "impact" title only if you can actually read the card or the user told you what it is. Never guess card names.
-- Use rainbow for holographic or shiny cards, shake plus boom or air horn only for the single biggest moment, a pop or whoosh for quick transitions, black_white or spotlight for dramatic build-up, and blur to hide something (e.g. a spoiler in the intro).
-- Restraint makes it fun: treat the best 1-4 moments, vary the effects, and keep regular cards clean. If you can't find clear hit moments, say what you see and ask which cards to hype.`;
+Effects toolkit:
+- Visual effects (add_effect): zoom punch-in, shake, flash, rainbow (holographic shimmer), blur (hide something), black_white and spotlight (drama). Sounds (add_sound): whoosh and pop for transitions, riser and drumroll for build-up, sparkle and ka-ching for reveals, boom and air horn for big impacts. Timing: slow_motion and freeze_frame. Titles: "caption" look for information, "impact" look for hype.
+- Time effects to the moment itself: start a build-up sound before it, and put the flash and sound exactly on it.
+- Restraint makes edits feel good: emphasize the few moments that matter, vary the effects, and leave ordinary footage clean. If you can't tell which moments matter, say what you see and ask.`;
 
 function r2(t) {
   return Math.round(t * 100) / 100;
@@ -317,7 +318,11 @@ async function callClaude(anthropic, model, system, messages) {
     // fallback model inside the same call.
     betas: ["server-side-fallback-2026-07-01"],
     fallbacks: "default",
-    system: [{ type: "text", text: system, cache_control: { type: "ephemeral" } }],
+    // Base instructions are cached; the video-type guidance follows them.
+    system: [
+      { type: "text", text: SYSTEM, cache_control: { type: "ephemeral" } },
+      { type: "text", text: system },
+    ],
     messages,
   });
   const msg = await stream.finalMessage();
@@ -341,6 +346,8 @@ async function callClaude(anthropic, model, system, messages) {
 
 export async function planEdit(project, { request, playhead = null, selectedClipId = null }) {
   const { anthropic, model } = await client();
+  const type = VIDEO_TYPES[videoTypeOf(project)];
+  const typeGuidance = `Video type: ${type.label}.\n${type.guidance}`;
   const ctx = await buildContext(project, { playhead, selectedClipId });
 
   // Footage block first: unchanged between requests unless media changes, so
@@ -368,13 +375,13 @@ export async function planEdit(project, { request, playhead = null, selectedClip
     ...historyMessages(project.chat),
     { role: "user", content },
   ];
-  let result = await callClaude(anthropic, model, SYSTEM, messages);
+  let result = await callClaude(anthropic, model, typeGuidance, messages);
 
   // Dry-run the plan. If an operation fails, give Claude one chance to fix it.
   const dryRun = (ops) => applyOperations(withSoundStubs(project, ops), ops);
   let dry = dryRun(result.plan.operations);
   if (dry.error) {
-    const retry = await callClaude(anthropic, model, SYSTEM, [
+    const retry = await callClaude(anthropic, model, typeGuidance, [
       ...messages,
       { role: "assistant", content: result.raw },
       { role: "user", content: `That plan failed when the editor dry-ran it: ${dry.error}\nReturn a corrected complete plan.` },

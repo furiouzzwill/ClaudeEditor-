@@ -3,6 +3,7 @@ import { api } from "./api.js";
 import { h, modal, toast, fmtBytes, menu } from "./ui.js";
 import { uploadFiles } from "./mediapool.js";
 import { timelineDuration } from "/shared/timeline.js";
+import { APP_NAME } from "/shared/brand.js";
 
 // ---- import ----------------------------------------------------------------
 
@@ -20,7 +21,7 @@ export function openImport() {
   const uploadPane = h(
     "div",
     { hidden: true },
-    h("div", { class: "note" }, "Uploading copies the file into Claude Editor's data folder. It works for any size, but for very large files “From disk” is faster because nothing is copied."),
+    h("div", { class: "note" }, `Uploading copies the file into ${APP_NAME}'s data folder. It works for any size, but for very large files “From disk” is faster because nothing is copied.`),
     h("p", {}, h("button", { class: "btn primary", onclick: () => fileInput.click() }, "Choose files…"), fileInput)
   );
   const importBtn = h("button", { class: "btn primary", disabled: true, onclick: doImport }, "Import");

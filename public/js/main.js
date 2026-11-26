@@ -8,6 +8,10 @@ import * as inspector from "./inspector.js";
 import "./mediapool.js";
 import "./assistant.js";
 import { openImport, openExport, openSettings, openProjectsMenu } from "./dialogs.js";
+import { APP_NAME } from "/shared/brand.js";
+
+document.title = APP_NAME;
+document.getElementById("appName").textContent = APP_NAME;
 import { splitAt, removeClip, deleteRanges, clipEnd, uid, snapToFrame, applyOperation, EFFECT_TYPES, SOUND_EFFECTS } from "/shared/timeline.js";
 
 const $ = (id) => document.getElementById(id);
@@ -130,7 +134,7 @@ $("btnEffects").onclick = (e) => {
     "-",
     { label: "Slow motion (0.5×)", hint: "next 2s", action: () => runOp({ op: "slow_motion", start: t, end: t + 2, speed: 0.5 }) },
     { label: "Freeze frame", hint: "1s", action: () => runOp({ op: "freeze_frame", time: t, duration: 1 }) },
-    { label: "Hype title", hint: "2s", action: () => runOp({ op: "add_text", start: t, end: t + 2, text: "LET'S GO!", look: "impact" }) },
+    { label: "Impact title", hint: "2s", action: () => runOp({ op: "add_text", start: t, end: t + 2, text: "WOW!", look: "impact" }) },
   ]);
 };
 $("btnSounds").onclick = (e) => {

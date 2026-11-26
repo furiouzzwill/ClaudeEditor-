@@ -24,8 +24,8 @@ export const AUDIO_EXT = /\.(mp3|wav|aac|m4a|flac|ogg|opus|aif|aiff|wma)$/i;
 
 const PROXY_HEIGHT = Number(process.env.PROXY_HEIGHT || 540);
 const WAVE_RATE = 20; // peaks per second
-// One keyframe every 2s for short videos (a 3-minute pack opening gets 90,
-// enough to catch individual card reveals), spreading out past 5 minutes.
+// One keyframe every 2s for short videos (a 3-minute video gets 90, enough to
+// catch quick moments like an item being held up), spreading out past 5 minutes.
 const MIN_KEYFRAMES = 12;
 const MAX_KEYFRAMES = 150;
 const KEYFRAME_EVERY = 2;
@@ -216,8 +216,8 @@ async function makeWaveform(media, proxyPath, dir, signal) {
   return bytes;
 }
 
-// The loudest stretches of audio: in pack openings these are usually the
-// reactions to a big pull ("NO WAY!"). Returns up to 40, in time order.
+// The loudest stretches of audio: reactions, cheering, impacts. Often the
+// moments worth emphasizing. Returns up to 40, in time order.
 export function loudMoments(peaks, rate = WAVE_RATE) {
   const win = Math.max(1, Math.round(rate / 2)); // 0.5s windows
   const levels = [];

@@ -1,7 +1,7 @@
 {
   "name": "claude-editor",
   "version": "0.1.0",
-  "description": "A non-linear video editor with a Claude editing assistant. FFmpeg does the heavy lifting, so source files of any size work.",
+  "description": "A free, open-source video editor with an AI editing assistant. Edits large files locally with FFmpeg.",
   "type": "module",
   "main": "server/index.js",
   "scripts": {
@@ -17,5 +17,20 @@
     "@anthropic-ai/sdk": "^1.14.0",
     "express": "^5.3.0",
     "zod": "^4.6.7"
-  }
+  },
+  "keywords": [
+    "video-editor",
+    "ffmpeg",
+    "ai",
+    "claude",
+    "anthropic",
+    "nle",
+    "effects",
+    "shorts"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/furiouzzwill/ClaudeEditor-.git"
+  },
+  "private": false
 }
