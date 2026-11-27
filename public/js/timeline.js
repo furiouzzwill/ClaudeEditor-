@@ -456,7 +456,7 @@ function drawClip(c, track, y, h, { ghost = false, dim = false } = {}) {
         : track.kind === "fx"
           ? "✦ " + (EFFECT_TYPES[c.effect?.type]?.label || c.effect?.type || "Effect")
           : track.kind === "graphics"
-            ? "🎬 " + (GRAPHICS[c.graphic?.template]?.label || "Graphic") + graphicSummary(c)
+            ? "🎬 " + (c.graphic?.template === "custom" ? c.graphic.spec?.name || "Custom animation" : (GRAPHICS[c.graphic?.template]?.label || "Graphic") + graphicSummary(c))
           : c.hold
             ? "❄ Freeze frame"
             : (media?.sfx ? "🔊 " : "") + (media?.name?.replace(/^SFX · /, "") || "Missing media") + (speedOf(c) !== 1 ? `  ·  ${speedOf(c)}×` : "");

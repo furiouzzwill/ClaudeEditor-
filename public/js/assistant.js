@@ -60,7 +60,9 @@ function describeOp(o) {
     case "slow_motion": return `🐢 Slow motion ${o.speed}× ${t(o.start)}–${t(o.end)}`;
     case "freeze_frame": return `❄ Freeze frame at ${t(o.time)} for ${t(o.duration)}`;
     case "set_clip_speed": return `Set ${o.clipId} speed to ${o.speed}×`;
+    case "update_graphic": return `🎬 Update animation ${o.spec?.name ? `“${o.spec.name}”` : o.clipId}`;
     case "add_graphic": {
+      if (o.template === "custom") return `✨ New animation “${o.spec?.name || "Custom"}” ${o.start == null || o.start < 0 ? "at the end" : `at ${t(o.start)}`} (${o.spec?.layers?.length || 0} layers)`;
       const g = GRAPHICS[o.template];
       const text = o.props?.headline || o.props?.title || o.props?.name || o.props?.text || "";
       return `🎬 ${g?.label || o.template}${text ? ` “${text}”` : ""} ${o.start == null || o.start < 0 ? "at the end" : `at ${t(o.start)}`}`;

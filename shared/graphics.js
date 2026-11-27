@@ -15,6 +15,8 @@
 // Fonts: Inter, registered under one family name per weight (see FONT_FILES)
 // so every machine renders identical text.
 
+import { drawCustom, specImageIds } from "./custom.js";
+
 export const FONT_FILES = {
   400: "Inter_400Regular.ttf",
   600: "Inter_600SemiBold.ttf",
@@ -119,7 +121,7 @@ function drawLogoFit(ctx, logo, cx, cy, maxW, maxH) {
 
 // ---- small vector icons (drawn in a 24x24 box) -----------------------------
 
-function icon(ctx, name, x, y, size, color) {
+export function icon(ctx, name, x, y, size, color) {
   ctx.save();
   ctx.translate(x, y);
   ctx.scale(size / 24, size / 24);
@@ -182,6 +184,51 @@ function icon(ctx, name, x, y, size, color) {
     ctx.quadraticCurveTo(2, 4, 4, 4);
     ctx.closePath();
     ctx.fill();
+  } else if (name === "star" || name === "sparkle") {
+    const spikes = name === "star" ? 5 : 4;
+    const outer = 11;
+    const inner = name === "star" ? 4.6 : 3;
+    for (let i = 0; i < spikes * 2; i++) {
+      const r = i % 2 ? inner : outer;
+      const a = (i * Math.PI) / spikes - Math.PI / 2;
+      ctx[i ? "lineTo" : "moveTo"](12 + Math.cos(a) * r, 12.5 + Math.sin(a) * r);
+    }
+    ctx.closePath();
+    ctx.fill();
+  } else if (name === "heart") {
+    ctx.moveTo(12, 21);
+    ctx.bezierCurveTo(5, 16, 2, 12, 2, 8);
+    ctx.bezierCurveTo(2, 4.5, 4.8, 2.5, 7.5, 2.5);
+    ctx.bezierCurveTo(9.6, 2.5, 11.2, 3.6, 12, 5.2);
+    ctx.bezierCurveTo(12.8, 3.6, 14.4, 2.5, 16.5, 2.5);
+    ctx.bezierCurveTo(19.2, 2.5, 22, 4.5, 22, 8);
+    ctx.bezierCurveTo(22, 12, 19, 16, 12, 21);
+    ctx.closePath();
+    ctx.fill();
+  } else if (name === "arrow") {
+    ctx.moveTo(3, 12);
+    ctx.lineTo(19, 12);
+    ctx.moveTo(13, 5.5);
+    ctx.lineTo(20, 12);
+    ctx.lineTo(13, 18.5);
+    ctx.lineWidth = 3;
+    ctx.stroke();
+  } else if (name === "share") {
+    ctx.moveTo(14, 4);
+    ctx.lineTo(22, 11);
+    ctx.lineTo(14, 18);
+    ctx.lineTo(14, 14);
+    ctx.bezierCurveTo(8, 14, 4.5, 16, 2, 20.5);
+    ctx.bezierCurveTo(3, 13, 7, 9, 14, 8);
+    ctx.closePath();
+    ctx.fill();
+  } else if (name === "plus") {
+    ctx.moveTo(12, 4);
+    ctx.lineTo(12, 20);
+    ctx.moveTo(4, 12);
+    ctx.lineTo(20, 12);
+    ctx.lineWidth = 3.2;
+    ctx.stroke();
   } else if (name === "play") {
     ctx.moveTo(8, 5);
     ctx.lineTo(19, 12);
@@ -835,6 +882,16 @@ export const GRAPHICS = {
   },
 };
 
+// Image media ids a graphic needs loaded (its logo field, or a custom
+// animation's image layers).
+export function graphicImageIds(c) {
+  if (c.graphic?.template === "custom") return specImageIds(c.graphic.spec);
+  const g = GRAPHICS[c.graphic?.template];
+  const f = g?.fields.find((x) => x.type === "image");
+  const id = f ? graphicProps(c)[f.key] : null;
+  return id ? [id] : [];
+}
+
 export function graphicProps(c) {
   const g = GRAPHICS[c.graphic?.template];
   if (!g) return {};
@@ -844,13 +901,19 @@ export function graphicProps(c) {
 }
 
 // Draw one frame of a graphic clip. `local` is seconds since the clip started.
-export function drawGraphic(ctx, c, local, W, H, { logo = null, makeCanvas }) {
-  const g = GRAPHICS[c.graphic?.template];
-  if (!g) return;
+export function drawGraphic(ctx, c, local, W, H, { images = {}, makeCanvas }) {
   const d = c.out - c.in;
+  const t = Math.max(0, Math.min(d, local));
   ctx.save();
   try {
-    g.draw({ ctx, t: Math.max(0, Math.min(d, local)), d, W, H, p: graphicProps(c), logo, makeCanvas });
+    if (c.graphic?.template === "custom") {
+      if (c.graphic.spec) drawCustom({ ctx, t, W, H, spec: c.graphic.spec, images, makeCanvas, fontFor: F, icon });
+      return;
+    }
+    const g = GRAPHICS[c.graphic?.template];
+    if (!g) return;
+    const ids = graphicImageIds(c);
+    g.draw({ ctx, t, d, W, H, p: graphicProps(c), logo: ids.length ? images[ids[0]] || null : null, makeCanvas });
   } finally {
     ctx.restore();
   }

@@ -59,6 +59,24 @@ export function render() {
       )
     );
 
+    if (track.kind === "graphics" && c.graphic?.template === "custom" && c.graphic.spec) {
+      const spec = c.graphic.spec;
+      const setLayer = (i, fields) => {
+        const layers = spec.layers.map((l, j) => (j === i ? { ...l, ...fields } : l));
+        set({ graphic: { ...c.graphic, spec: { ...spec, layers } } });
+      };
+      const textLayers = spec.layers.map((l, i) => [l, i]).filter(([l]) => l.type === "text");
+      const colorLayers = spec.layers.map((l, i) => [l, i]).filter(([l]) => typeof l.fill === "string" && /^#[0-9a-f]{6}$/i.test(l.fill) && l.type !== "text");
+      root.append(
+        h("div", { class: "section" },
+          h("h4", {}, "✨ " + spec.name),
+          h("div", { class: "small muted", style: { marginBottom: "10px" } },
+            `A custom animation (${spec.layers.length} layers). Edit the text and colors here, or select it and ask Claude to change the design (e.g. "make it slower", "use my brand purple", "move it to the top").`),
+          ...textLayers.map(([l, i], n) => field(`Text ${n + 1}`, h("input", { value: l.text, onchange: (e) => setLayer(i, { text: e.target.value }) }))),
+          ...colorLayers.slice(0, 6).map(([l, i], n) => field(`Color ${n + 1}`, h("input", { type: "color", value: l.fill, onchange: (e) => setLayer(i, { fill: e.target.value }) })))
+        )
+      );
+    }
     if (track.kind === "graphics" && c.graphic && GRAPHICS[c.graphic.template]) {
       const def = GRAPHICS[c.graphic.template];
       const props = graphicProps(c);

@@ -213,3 +213,65 @@ test("every graphics template draws without errors", async () => {
     }
   }
 });
+
+// ---- custom animations -----------------------------------------------------------
+
+test("normalizeSpec cleans up a design and reports problems", async () => {
+  const { normalizeSpec } = await import("../shared/custom.js");
+  const { spec, warnings } = normalizeSpec(
+    {
+      name: "x".repeat(200),
+      duration: 999,
+      layers: [
+        { type: "rect", x: "10", fill: "url(javascript:alert(1))", keyframes: { x: [{ t: 1, v: 5 }, { t: 0, v: 0 }], evil: [{ t: 0, v: 1 }] } },
+        { type: "text", text: "hi", weight: 300, uppercase: true },
+        { type: "image", image: "nope" },
+        { type: "icon", icon: "skull" },
+        { type: "script", code: "alert(1)" },
+      ],
+    },
+    { imageIds: ["img1"] }
+  );
+  assert.equal(spec.name.length, 60);
+  assert.equal(spec.duration, 30);
+  assert.equal(spec.layers.length, 2);
+  assert.equal(spec.layers[0].x, 10);
+  assert.equal(spec.layers[0].fill, "#ffffff", "unsafe color replaced by default");
+  assert.deepEqual(spec.layers[0].keyframes.x.map((k) => k.t), [0, 1], "keyframes sorted");
+  assert.equal(spec.layers[1].text, "HI");
+  assert.equal(spec.layers[1].weight, 700);
+  assert.equal(warnings.length, 4);
+});
+
+test("add_graphic custom and update_graphic", () => {
+  let p = project();
+  p.media.push({ id: "img1", name: "logo.png", isImage: true, duration: 0 });
+  const spec = { name: "Card", duration: 3, layers: [{ type: "rect", width: 100, height: 50 }, { type: "image", image: "img1" }] };
+  p = T.applyOperation(p, { op: "add_graphic", template: "custom", start: 2, end: -1, spec });
+  const g = p.clips.find((c) => c.graphic);
+  assert.equal(g.graphic.template, "custom");
+  assert.equal(T.clipEnd(g), 5);
+  assert.equal(g.graphic.spec.layers.length, 2);
+  p = T.applyOperation(p, { op: "update_graphic", clipId: g.id, spec: { ...spec, name: "Card 2", duration: 4 } });
+  const g2 = p.clips.find((c) => c.graphic);
+  assert.equal(g2.graphic.spec.name, "Card 2");
+  assert.equal(T.clipEnd(g2), 6);
+  assert.throws(() => T.applyOperation(p, { op: "add_graphic", template: "custom", start: 0, spec: { layers: [{ type: "blob" }] } }), /no usable layers/);
+});
+
+test("custom animations draw every layer type without errors", async () => {
+  const { drawGraphic } = await import("../shared/graphics.js");
+  const { normalizeSpec, LAYER_TYPES, ICON_NAMES } = await import("../shared/custom.js");
+  const noop = () => {};
+  const ctx = new Proxy({}, {
+    get: (t, k) => (k in t ? t[k] : k === "measureText" ? (s) => ({ width: String(s).length * 10 }) : k.startsWith("create") ? () => ({ addColorStop: noop }) : noop),
+    set: (t, k, v) => ((t[k] = v), true),
+  });
+  const layers = [
+    ...LAYER_TYPES.filter((t) => t !== "image" && t !== "icon").map((type) => ({ type, text: "Hello world", keyframes: { opacity: [{ t: 0, v: 0 }, { t: 1, v: 1, ease: "elastic" }], fill: [{ t: 0, v: "#ff0000" }, { t: 2, v: "#0000ff" }] }, reveal: 0.5 })),
+    ...ICON_NAMES.map((icon) => ({ type: "icon", icon, spin: 90, pulse: { amount: 0.1, speed: 1 } })),
+    ...["typewriter", "words", "letters", "fade"].map((type) => ({ type: "text", text: "Line one\nLine two", maxWidth: 100, textAnimation: { type } })),
+  ];
+  const { spec } = normalizeSpec({ duration: 3, layers });
+  for (const t of [0, 0.5, 1.5, 3]) drawGraphic(ctx, { in: 0, out: 3, graphic: { template: "custom", spec } }, t, 1920, 1080, { makeCanvas: () => ({ getContext: () => ctx }) });
+});

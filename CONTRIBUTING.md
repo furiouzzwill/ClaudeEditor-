@@ -24,6 +24,9 @@ shared/timeline.js   The timeline model and every edit operation. Pure functions
 shared/presets.js    Video types: assistant guidance + quick actions per genre
 shared/graphics.js   Animated graphics templates (outro, subscribe, logo reveal…).
                      Pure canvas drawing code used by both preview and export.
+shared/custom.js     The custom animation format (layers + keyframes) the assistant
+                     designs new animations in, with its validator and renderer.
+server/preview.js    Renders frames of a graphic for the assistant's design review.
 shared/brand.js      The app's name (one place to change it)
 server/index.js      HTTP API
 server/media.js      Import pipeline: probe, proxy, thumbnails, waveform,
@@ -51,6 +54,8 @@ Key ideas:
 - Use the easing helpers and keep motion fast and clean (most entrances take 0.3–0.6 s).
 - Make it a pure function of `t`: no randomness and no state between frames. The export renders each frame independently.
 - Use only the bundled fonts (`F(weight, px)`), so the export matches the preview.
+
+**Extending custom animations:** the format lives in `shared/custom.js`. `normalizeSpec` validates the design and `drawCustom` renders it. To add a layer type, an icon or an animatable property, change both, add a test, and describe it in the "New animations" part of the system prompt in `server/ai.js`. Keep the format data-only: never evaluate strings from a spec as code.
 
 **A new visual effect:**
 1. Add it to `EFFECT_TYPES` in `shared/timeline.js`, with a label and default intensity.

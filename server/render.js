@@ -21,28 +21,28 @@ import { spawn } from "node:child_process";
 import { createCanvas, loadImage, GlobalFonts } from "@napi-rs/canvas";
 import { ffmpeg, FFMPEG } from "./ffmpeg.js";
 import { EXPORTS, ROOT, mediaDir } from "./store.js";
-import { drawGraphic, graphicProps, GRAPHICS, FONT_FILES, fontFamily } from "../shared/graphics.js";
+import { drawGraphic, graphicImageIds, GRAPHICS, FONT_FILES, fontFamily } from "../shared/graphics.js";
 
 // The same font files the browser preview uses, under the same names.
 for (const [w, file] of Object.entries(FONT_FILES)) {
   GlobalFonts.registerFromPath(path.join(ROOT, "public", "fonts", file), fontFamily(w));
 }
 
+export async function loadGraphicImages(c) {
+  const images = {};
+  for (const id of graphicImageIds(c)) {
+    try {
+      images[id] = await loadImage(await fsp.readFile(path.join(mediaDir(id), "image.png")));
+    } catch {}
+  }
+  return images;
+}
+
 // Render a graphics clip to a lossless video with transparency (QuickTime
 // Animation), drawing each frame with the shared template code.
 async function renderGraphicClip(project, c, frames, fps, fpsStr, out, signal) {
   const { width: W, height: H } = project.settings;
-  let logo = null;
-  const def = GRAPHICS[c.graphic.template];
-  const imgField = def?.fields.find((f) => f.type === "image");
-  const logoId = imgField ? graphicProps(c)[imgField.key] : null;
-  if (logoId) {
-    try {
-      logo = await loadImage(await fsp.readFile(path.join(mediaDir(logoId), "image.png")));
-    } catch {
-      logo = null;
-    }
-  }
+  const images = await loadGraphicImages(c);
   const canvas = createCanvas(W, H);
   const ctx = canvas.getContext("2d");
   const child = spawn(
@@ -63,7 +63,7 @@ async function renderGraphicClip(project, c, frames, fps, fpsStr, out, signal) {
     for (let i = 0; i < frames; i++) {
       if (signal?.aborted) throw new Error("Cancelled");
       ctx.clearRect(0, 0, W, H);
-      drawGraphic(ctx, c, i / fps, W, H, { logo, makeCanvas: (w, h) => createCanvas(w, h) });
+      drawGraphic(ctx, c, i / fps, W, H, { images, makeCanvas: (w, h) => createCanvas(w, h) });
       const buf = ctx.getImageData(0, 0, W, H).data;
       if (!child.stdin.write(Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength))) {
         await new Promise((r) => child.stdin.once("drain", r));
@@ -161,7 +161,7 @@ export async function renderProject(project, { quality = "standard", fileName, o
     // while each segment is cut, and extra audio is mixed while the video
     // stream is copied untouched.
     const graphicClips = project.clips
-      .filter((c) => c.graphic && GRAPHICS[c.graphic.template] && trackById(project, c.trackId)?.kind === "graphics")
+      .filter((c) => c.graphic && (GRAPHICS[c.graphic.template] || (c.graphic.template === "custom" && c.graphic.spec)) && trackById(project, c.trackId)?.kind === "graphics")
       .sort((a, b) => a.start - b.start);
     const needsComposite = overlayClips.length > 0 || graphicClips.length > 0;
     const burnTextInSegments = !needsComposite && textClips.length > 0;

@@ -4,7 +4,7 @@
 
 import { store } from "./state.js";
 import { clipEnd, mediaById, formatTimecode, videoTracksBottomUp, srcAt, speedOf } from "/shared/timeline.js";
-import { drawGraphic, graphicProps, GRAPHICS, FONT_FILES, fontFamily } from "/shared/graphics.js";
+import { drawGraphic, graphicImageIds, FONT_FILES, fontFamily } from "/shared/graphics.js";
 
 const stageWrap = document.getElementById("stageWrap");
 const stage = document.getElementById("stage");
@@ -43,18 +43,19 @@ Promise.all(
   })
   .catch(() => {});
 
-function logoFor(c) {
-  const field = GRAPHICS[c.graphic.template]?.fields.find((f) => f.type === "image");
-  const id = field ? graphicProps(c)[field.key] : null;
-  if (!id) return null;
-  let img = logoCache.get(id);
-  if (!img) {
-    img = new Image();
-    img.onload = () => drawGraphics(store.playhead);
-    img.src = `/media/${id}/image`;
-    logoCache.set(id, img);
+function imagesFor(c) {
+  const out = {};
+  for (const id of graphicImageIds(c)) {
+    let img = logoCache.get(id);
+    if (!img) {
+      img = new Image();
+      img.onload = () => drawGraphics(store.playhead);
+      img.src = `/media/${id}/image`;
+      logoCache.set(id, img);
+    }
+    if (img.complete && img.naturalWidth) out[id] = img;
   }
-  return img.complete && img.naturalWidth ? img : null;
+  return out;
 }
 
 export function drawGraphics(t) {
@@ -74,7 +75,7 @@ export function drawGraphics(t) {
   if (!active.length) return;
   const { width: W, height: H } = p.settings;
   gctx.setTransform(cw / W, 0, 0, ch / H, 0, 0);
-  for (const c of active) drawGraphic(gctx, c, t - c.start, W, H, { logo: logoFor(c), makeCanvas });
+  for (const c of active) drawGraphic(gctx, c, t - c.start, W, H, { images: imagesFor(c), makeCanvas });
 }
 
 function applyEffects(t) {

@@ -4,7 +4,7 @@
 
 - **Works with huge files.** A 50 GB source is as easy as a 50 MB one. Your video never leaves your computer; the assistant only sees a compact summary.
 - **Tuned for your kind of video.** Pick a video type (general, unboxing / pack opening, gaming, vlog, tutorial, sports) and the assistant edits in that style.
-- **Clean animated graphics.** Outro end screens, subscribe & comment reminders, logo reveals, name tags and animated titles, using your own logo.
+- **Clean animated graphics.** Outro end screens, subscribe & comment reminders, logo reveals, name tags and animated titles, using your own logo. Or describe a brand-new animation and the assistant designs it.
 - **Fun effects built in.** Zooms, shakes, flashes, holo shimmer, slow motion, freeze frames, bold titles and 8 sound effects.
 - **Runs locally** in your browser on Mac, Windows or Linux. You bring your own Anthropic API key.
 
@@ -72,7 +72,8 @@ Adding a new type means adding one entry to [`shared/presets.js`](shared/presets
 - **Logo reveal:** your logo scales in with a light sweep, then your name and tagline
 - **Name tag (lower third)** and **animated title** (words rise in with an accent underline)
 - Import your logo (PNG, JPG, SVG or WebP) like any media. Every text, color and logo is editable in the Inspector. Templates adapt to vertical 9:16 too.
-- Graphics are drawn by the same code in the preview and the export, with bundled fonts, so what you see is exactly what you get.
+- **Brand-new animations:** choose **🎬 Graphics → ✨ Create a new animation with Claude…** and describe it, for example "a follow card for my Instagram that slides in from the right with a heart". The assistant designs it as layers (text, shapes, your logo, icons, lines) with keyframed motion. The editor renders a few frames and shows them back to the assistant to fix layout or contrast problems before you see the plan. Select it later and ask for changes ("slower", "use my brand purple").
+- Graphics are drawn by the same code in the preview and the export, with bundled fonts, so what you see is exactly what you get. New animations are data, not code: nothing the assistant designs can run on your computer.
 
 **Effects** (from the ✨ Effects and 🔊 Sounds menus, or ask the assistant)
 - Zoom punch-in, camera shake, white flash, rainbow holo shimmer, blur, black & white, spotlight vignette, each with adjustable intensity

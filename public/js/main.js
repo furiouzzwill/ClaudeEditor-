@@ -143,6 +143,16 @@ $("btnGraphics").onclick = (e) => {
       },
     })),
     "-",
+    {
+      label: "✨ Create a new animation with Claude…",
+      action: () => {
+        document.querySelector('.tab[data-tab="assistant"]').click();
+        const box = $("prompt");
+        box.value = `Create a new animation at ${snapToFrame(store.playhead, store.project.settings.fps).toFixed(1)}s: `;
+        box.focus();
+        box.setSelectionRange(box.value.length, box.value.length);
+      },
+    },
     { label: logo ? "Tip: graphics use your first imported image as the logo" : "Tip: import a PNG/JPG/SVG logo to use it in graphics", action: () => {} },
   ]);
 };

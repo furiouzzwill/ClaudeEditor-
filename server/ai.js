@@ -23,6 +23,8 @@ import {
   EFFECT_TYPES, SOUND_EFFECTS, withSoundStubs, GRAPHICS,
 } from "../shared/timeline.js";
 import { VIDEO_TYPES, videoTypeOf } from "../shared/presets.js";
+import { normalizeSpec, LAYER_TYPES, ICON_NAMES, EASES } from "../shared/custom.js";
+import { graphicContactSheet } from "./preview.js";
 import { APP_NAME } from "../shared/brand.js";
 
 export const DEFAULT_MODEL = "claude-opus-5-5";
@@ -100,15 +102,16 @@ const OPERATIONS_SCHEMA = {
     {
       type: "object",
       description:
-        "Add an animated graphic (motion template) on the graphics track, drawn on top of everything. start -1 = right after the end of the timeline (use for outros). end -1 = the template's default length. props: only the fields listed for that template; omit a field to use its default. Image fields take an image media id from <footage>.images.\n" +
+        "Add an animated graphic on the graphics track, drawn on top of everything. start -1 = right after the end of the timeline (use for outros). end -1 = the default length. For a ready-made template, set props: only the fields listed for that template; omit a field to use its default. Image fields take an image media id from <footage>.images. For template \"custom\", design a new animation in `spec` (see the custom animation format in your instructions) and leave props empty.\n" +
         Object.entries(GRAPHICS)
           .map(([id, g]) => `- ${id} (${g.duration}s): ${g.description} Fields: ${g.fields.map((f) => `${f.key}${f.type === "select" ? ` [${f.options.join("|")}]` : f.type === "color" ? " (hex color)" : f.type === "image" ? " (image id)" : ""}`).join(", ")}.`)
           .join("\n"),
       properties: {
         op: { type: "string", enum: ["add_graphic"] },
-        template: { type: "string", enum: Object.keys(GRAPHICS) },
+        template: { type: "string", enum: [...Object.keys(GRAPHICS), "custom"] },
         start: num,
         end: num,
+        spec: { type: "object", description: "Only for template \"custom\": the animation design." },
         props: {
           type: "object",
           properties: Object.fromEntries(
@@ -116,7 +119,18 @@ const OPERATIONS_SCHEMA = {
           ),
         },
       },
-      required: ["op", "template", "start", "end", "props"],
+      required: ["op", "template", "start", "end"],
+    },
+    {
+      type: "object",
+      description: "Change an existing graphic: pass `spec` to replace a custom animation's design (send the complete new spec), or `props` to change fields of a template graphic.",
+      properties: {
+        op: { type: "string", enum: ["update_graphic"] },
+        clipId: str,
+        spec: { type: "object" },
+        props: { type: "object" },
+      },
+      required: ["op", "clipId"],
     },
   ],
 };
@@ -136,6 +150,7 @@ function normalizeOp(o) {
     if (out.start == null || out.start < 0) out.start = -1;
     if (out.end == null || out.end < 0) out.end = null;
     out.props = Object.fromEntries(Object.entries(out.props || {}).filter(([, v]) => v != null && v !== ""));
+    if (out.template !== "custom") delete out.spec;
   }
   return out;
 }
@@ -162,7 +177,7 @@ const PlanZ = z.object({
         add_text: ["start", "end", "text"], set_clip_volume: ["clipId", "volume"], set_clip_fit: ["clipId", "fit"],
         set_format: [], add_marker: ["time", "label"], clear_timeline: [],
         add_effect: ["type", "start", "end"], add_sound: ["sound", "time"], slow_motion: ["start", "end", "speed"],
-        freeze_frame: ["time", "duration"], set_clip_speed: ["clipId", "speed"], add_graphic: ["template"],
+        freeze_frame: ["time", "duration"], set_clip_speed: ["clipId", "speed"], add_graphic: ["template"], update_graphic: ["clipId"],
       }[o.op];
       if (!need) return ctx.addIssue({ code: "custom", message: `unknown op ${o.op}` });
       for (const k of need) if (o[k] == null) ctx.addIssue({ code: "custom", message: `${o.op} missing ${k}` });
@@ -206,7 +221,25 @@ Animated graphics (add_graphic): clean, professionally designed motion templates
 - Outros go after the video (start -1) unless the user wants them over the last seconds (then use background "dim video").
 - Put a subscribe reminder where it won't cover something important; early-to-middle in the video, during a calm stretch, is typical. Keep it to one per video unless asked.
 - Use the user's logo (an image id from <footage>.images) wherever a template has a logo field. If they have no logo image, leave it empty and mention they can import one.
-- Match accent colors to the logo or the video's look when you can see them; otherwise keep the defaults. Keep wording short and natural. Never invent a channel name or the user's name; ask, or leave those fields at their defaults.`;
+- Match accent colors to the logo or the video's look when you can see them; otherwise keep the defaults. Keep wording short and natural. Never invent a channel name or the user's name; ask, or leave those fields at their defaults.
+
+New animations (add_graphic with template "custom"): when no template fits what the user asks for, design one. You describe it as data; the editor animates it.
+spec = { name, duration (s), width, height (use the project's frame size), layers: [...] }, drawn in order (first = bottom). Each layer:
+- type: ${LAYER_TYPES.join(" | ")}
+- start, end: visible window in seconds; x, y: anchor position in pixels; anchor: center (default), top-left, top, top-right, left, right, bottom-left, bottom, bottom-right
+- rect: width, height, radius (corners). circle: radius. line: x, y to x2, y2, strokeWidth, draw (0..1 progress). icon: icon (${ICON_NAMES.join(", ")}), width (size). image: image (an image id from <footage>.images), width, height, fit contain|cover, circle true|false
+- text: text, size (px), weight 400|600|700|800 (Inter), align left|center|right, maxWidth (wraps), lineHeight, uppercase, stroke + strokeWidth for an outline; textAnimation: { type: typewriter|words|letters|fade, start, duration, stagger }
+- fill: "#hex", "rgba(...)" or { from, to, angle } gradient; stroke, strokeWidth; opacity; rotation (deg); scale, scaleX, scaleY; shadow: { color, blur, x, y }
+- reveal (0..1) + revealFrom left|right|top|bottom|center: a wipe mask
+- spin (deg/s), float { amount (px), speed (Hz) }, pulse { amount (0.05 = 5%), speed }
+- keyframes: { prop: [ { t, v, ease } ] } for x y opacity rotation scale scaleX scaleY width height radius reveal size x2 y2 draw fill color stroke strokeWidth. ease (${EASES.join(", ")}) shapes the motion into that keyframe; before the first keyframe the first value holds, after the last the last value holds.
+Design rules, so it looks clean and professional:
+- One idea per animation, short words, big readable type (at 1080p: 40px or more for main text, 26px or more for secondary). Use Inter weights for hierarchy (800 headline, 400-600 supporting).
+- A restrained palette: white or near-black plus one or two accent colors (from the logo if there is one). Use soft shadows or a dark translucent panel behind text that sits over video, for contrast.
+- Keep everything inside a safe margin (5% of the frame from each edge), aligned to a clear grid, with consistent spacing.
+- Motion: entrances of 0.3-0.6s with "out" or "back" easing, staggered by 0.05-0.15s; hold long enough to read (at least 1.5s); exit in 0.3-0.4s with "in" easing, or end cleanly. Avoid constant jitter; use float, pulse and spin subtly.
+- Overlays (callouts, cards, banners) should cover little of the frame; full-screen designs need a background layer.
+After you propose a custom animation, the editor renders frames of it over the video and shows them to you to review.`;
 
 function r2(t) {
   return Math.round(t * 100) / 100;
@@ -272,7 +305,7 @@ async function buildContext(project, { playhead, selectedClipId }) {
         ...(speedOf(c) !== 1 ? { speed: speedOf(c) } : {}),
         ...(c.text ? { text: c.text } : {}),
         ...(c.effect ? { effect: c.effect.type, intensity: c.effect.intensity } : {}),
-        ...(c.graphic ? { graphic: c.graphic.template, props: c.graphic.props || {} } : {}),
+        ...(c.graphic ? (c.graphic.template === "custom" ? { graphic: "custom", spec: c.graphic.spec } : { graphic: c.graphic.template, props: c.graphic.props || {} }) : {}),
         ...(c.mediaId && project.media.find((m) => m.id === c.mediaId)?.sfx ? { sound: project.media.find((m) => m.id === c.mediaId).sfx } : {}),
         ...(c.volume != null && c.volume !== 1 && !c.effect && !c.text ? { volume: c.volume } : {}),
         ...(c.fit && c.fit !== "fit" && !c.effect && !c.text ? { fit: c.fit } : {}),
@@ -477,6 +510,26 @@ export async function planEdit(project, { request, playhead = null, selectedClip
     throw Object.assign(new Error("Claude's plan couldn't be read, even after a retry: " + result.invalid), { status: 502 });
   }
 
+  // Design review: render frames of any new or changed custom animations and
+  // let Claude look at them once and refine the design.
+  if (!dry.error && result.toolUseId) {
+    const review = await reviewCustomGraphics(project, dry.project, result.plan.operations);
+    if (review) {
+      const second = await callClaude(anthropic, model, typeGuidance, [
+        ...messages,
+        { role: "assistant", content: result.content },
+        { role: "user", content: [{ type: "tool_result", tool_use_id: result.toolUseId, content: review }] },
+      ]);
+      if (second.plan) {
+        const dry2 = dryRun(second.plan.operations);
+        if (!dry2.error) {
+          result = second;
+          dry = dry2;
+        }
+      }
+    }
+  }
+
   return {
     message: result.plan.message,
     operations: result.plan.operations,
@@ -490,6 +543,43 @@ export async function planEdit(project, { request, playhead = null, selectedClip
       clipsAfter: dry.project.clips.length,
     },
   };
+}
+
+// Builds the review message (text + contact-sheet images) for custom
+// animations that a plan adds or changes. Returns null if there are none.
+async function reviewCustomGraphics(before, after, ops) {
+  const beforeSpecs = new Map(before.clips.filter((c) => c.graphic).map((c) => [c.id, JSON.stringify(c.graphic)]));
+  const changed = after.clips.filter((c) => c.graphic?.template === "custom" && beforeSpecs.get(c.id) !== JSON.stringify(c.graphic)).slice(0, 3);
+  if (!changed.length) return null;
+  const content = [];
+  const warnings = [];
+  for (const op of ops) {
+    const raw = op.op === "add_graphic" && op.template === "custom" ? op.spec : op.op === "update_graphic" ? op.spec : null;
+    if (raw) {
+      try {
+        warnings.push(...normalizeSpec(raw, { width: after.settings.width, height: after.settings.height }).warnings);
+      } catch (e) {
+        warnings.push(e.message);
+      }
+    }
+  }
+  for (const c of changed) {
+    try {
+      const { jpeg, times } = await graphicContactSheet(after, c);
+      content.push({ type: "text", text: `"${c.graphic.spec.name}" (${(c.out - c.in).toFixed(1)}s, starting at ${c.start.toFixed(2)}s on the timeline), rendered at t = ${times.join("s, ")}s:` });
+      content.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: Buffer.from(jpeg).toString("base64") } });
+    } catch (e) {
+      content.push({ type: "text", text: `Couldn't render "${c.graphic.spec?.name}": ${e.message}` });
+    }
+  }
+  content.push({
+    type: "text",
+    text:
+      (warnings.length ? `Editor warnings: ${warnings.join(" ")}\n` : "") +
+      "Review the frames: is all text fully on screen and readable over the video, nothing clipped or awkwardly overlapping, spacing and alignment clean, and does the motion progress sensibly? " +
+      "If it looks good, call propose_edit_plan again with the same plan. If not, call it with an improved plan (complete, not just the changes).",
+  });
+  return content;
 }
 
 export { buildContext, PLAN_SCHEMA, normalizeOp };

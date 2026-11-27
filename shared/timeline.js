@@ -18,6 +18,7 @@
 export const TRACK_KINDS = ["video", "audio", "text", "fx", "graphics"];
 
 import { GRAPHICS } from "./graphics.js";
+import { normalizeSpec } from "./custom.js";
 export { GRAPHICS };
 
 export const EFFECT_TYPES = {
@@ -277,6 +278,13 @@ export function appendMedia(project, mediaId, trackId = null, inPoint = 0, outPo
   });
 }
 
+function customSpec(project, raw) {
+  const imageIds = project.media.filter((m) => m.isImage).map((m) => m.id);
+  const res = normalizeSpec(raw, { width: project.settings.width, height: project.settings.height, imageIds });
+  if (!res.spec.layers.length) throw new Error("The animation has no usable layers: " + res.warnings.join(" "));
+  return res;
+}
+
 // Open a gap of length d at time t on every track (everything after shifts right).
 export function insertGap(project, t, d) {
   let p = splitAt(project, t);
@@ -351,6 +359,7 @@ export const OPERATION_TYPES = [
   "freeze_frame",
   "add_sound",
   "add_graphic",
+  "update_graphic",
 ];
 
 export function applyOperation(project, op) {
@@ -464,6 +473,16 @@ export function applyOperation(project, op) {
     }
     case "add_graphic": {
       const template = String(op.template || "").toLowerCase();
+      if (template === "custom") {
+        const p = clone(project);
+        migrateProject(p);
+        const { spec } = customSpec(p, op.spec);
+        const start = op.start == null || op.start < 0 ? snapToFrame(timelineDuration(p), fps) : s(op.start);
+        const end = op.end != null && op.end > start ? s(op.end) : start + spec.duration;
+        spec.duration = end - start;
+        const trackId = p.tracks.find((t) => t.kind === "graphics").id;
+        return placeClip(p, { trackId, start, in: 0, out: end - start, graphic: { template: "custom", spec } });
+      }
       const g = GRAPHICS[template];
       if (!g) throw new Error(`Unknown graphic ${op.template}`);
       const p = clone(project);
@@ -481,6 +500,21 @@ export function applyOperation(project, op) {
       }
       const trackId = p.tracks.find((t) => t.kind === "graphics").id;
       return placeClip(p, { trackId, start, in: 0, out: end - start, graphic: { template, props } });
+    }
+    case "update_graphic": {
+      // Replace a graphic's design (custom spec) or change template props.
+      const c = project.clips.find((x) => x.id === op.clipId);
+      if (!c?.graphic) throw new Error(`Clip ${op.clipId} isn't a graphic`);
+      const p = clone(project);
+      const target = p.clips.find((x) => x.id === op.clipId);
+      if (op.spec) {
+        const { spec } = customSpec(p, op.spec);
+        target.graphic = { template: "custom", spec };
+        target.out = target.in + spec.duration;
+      } else if (op.props && GRAPHICS[target.graphic.template]) {
+        target.graphic = { ...target.graphic, props: { ...(target.graphic.props || {}), ...op.props } };
+      }
+      return p;
     }
     case "clear_timeline": {
       const p = clone(project);
