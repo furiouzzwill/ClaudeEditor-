@@ -20,7 +20,7 @@ import { getConfig, mediaDir } from "./store.js";
 import { getAnalysis } from "./media.js";
 import {
   applyOperations, clipEnd, mapSourceIntervals, mapSourcePoint, timelineDuration, speedOf,
-  EFFECT_TYPES, SOUND_EFFECTS, withSoundStubs,
+  EFFECT_TYPES, SOUND_EFFECTS, withSoundStubs, GRAPHICS,
 } from "../shared/timeline.js";
 import { VIDEO_TYPES, videoTypeOf } from "../shared/presets.js";
 import { APP_NAME } from "../shared/brand.js";
@@ -97,6 +97,27 @@ const OPERATIONS_SCHEMA = {
     opSchema("set_clip_speed", "Change a whole clip's speed (0.25-4). Later material shifts to stay in sync.", {
       clipId: str, speed: num,
     }),
+    {
+      type: "object",
+      description:
+        "Add an animated graphic (motion template) on the graphics track, drawn on top of everything. start -1 = right after the end of the timeline (use for outros). end -1 = the template's default length. props: only the fields listed for that template; omit a field to use its default. Image fields take an image media id from <footage>.images.\n" +
+        Object.entries(GRAPHICS)
+          .map(([id, g]) => `- ${id} (${g.duration}s): ${g.description} Fields: ${g.fields.map((f) => `${f.key}${f.type === "select" ? ` [${f.options.join("|")}]` : f.type === "color" ? " (hex color)" : f.type === "image" ? " (image id)" : ""}`).join(", ")}.`)
+          .join("\n"),
+      properties: {
+        op: { type: "string", enum: ["add_graphic"] },
+        template: { type: "string", enum: Object.keys(GRAPHICS) },
+        start: num,
+        end: num,
+        props: {
+          type: "object",
+          properties: Object.fromEntries(
+            [...new Set(Object.values(GRAPHICS).flatMap((g) => g.fields.map((f) => f.key)))].map((k) => [k, { type: "string" }])
+          ),
+        },
+      },
+      required: ["op", "template", "start", "end", "props"],
+    },
   ],
 };
 
@@ -111,6 +132,11 @@ function normalizeOp(o) {
   if (typeof out.position === "string") out.position = out.position.toLowerCase();
   for (const k of ["type", "sound", "look"]) if (typeof out[k] === "string") out[k] = out[k].toLowerCase();
   if (out.op === "add_effect" && !(out.intensity > 0)) out.intensity = null;
+  if (out.op === "add_graphic") {
+    if (out.start == null || out.start < 0) out.start = -1;
+    if (out.end == null || out.end < 0) out.end = null;
+    out.props = Object.fromEntries(Object.entries(out.props || {}).filter(([, v]) => v != null && v !== ""));
+  }
   return out;
 }
 
@@ -136,7 +162,7 @@ const PlanZ = z.object({
         add_text: ["start", "end", "text"], set_clip_volume: ["clipId", "volume"], set_clip_fit: ["clipId", "fit"],
         set_format: [], add_marker: ["time", "label"], clear_timeline: [],
         add_effect: ["type", "start", "end"], add_sound: ["sound", "time"], slow_motion: ["start", "end", "speed"],
-        freeze_frame: ["time", "duration"], set_clip_speed: ["clipId", "speed"],
+        freeze_frame: ["time", "duration"], set_clip_speed: ["clipId", "speed"], add_graphic: ["template"],
       }[o.op];
       if (!need) return ctx.addIssue({ code: "custom", message: `unknown op ${o.op}` });
       for (const k of need) if (o[k] == null) ctx.addIssue({ code: "custom", message: `${o.op} missing ${k}` });
@@ -174,7 +200,13 @@ How to plan:
 Effects toolkit:
 - Visual effects (add_effect): zoom punch-in, shake, flash, rainbow (holographic shimmer), blur (hide something), black_white and spotlight (drama). Sounds (add_sound): whoosh and pop for transitions, riser and drumroll for build-up, sparkle and ka-ching for reveals, boom and air horn for big impacts. Timing: slow_motion and freeze_frame. Titles: "caption" look for information, "impact" look for hype.
 - Time effects to the moment itself: start a build-up sound before it, and put the flash and sound exactly on it.
-- Restraint makes edits feel good: emphasize the few moments that matter, vary the effects, and leave ordinary footage clean. If you can't tell which moments matter, say what you see and ask.`;
+- Restraint makes edits feel good: emphasize the few moments that matter, vary the effects, and leave ordinary footage clean. If you can't tell which moments matter, say what you see and ask.
+
+Animated graphics (add_graphic): clean, professionally designed motion templates (outro end screen, subscribe/comment reminder, logo reveal, name tag, animated title). They're drawn on top of everything.
+- Outros go after the video (start -1) unless the user wants them over the last seconds (then use background "dim video").
+- Put a subscribe reminder where it won't cover something important; early-to-middle in the video, during a calm stretch, is typical. Keep it to one per video unless asked.
+- Use the user's logo (an image id from <footage>.images) wherever a template has a logo field. If they have no logo image, leave it empty and mention they can import one.
+- Match accent colors to the logo or the video's look when you can see them; otherwise keep the defaults. Keep wording short and natural. Never invent a channel name or the user's name; ask, or leave those fields at their defaults.`;
 
 function r2(t) {
   return Math.round(t * 100) / 100;
@@ -183,7 +215,8 @@ function r2(t) {
 async function buildContext(project, { playhead, selectedClipId }) {
   const used = new Set(project.clips.map((c) => c.mediaId).filter(Boolean));
   // Sound effects are listed by name in the schema; their analysis isn't useful.
-  const ready = project.media.filter((m) => m.status === "ready" && !m.sfx);
+  const ready = project.media.filter((m) => m.status === "ready" && !m.sfx && !m.isImage);
+  const logos = project.media.filter((m) => m.isImage);
   const analyses = new Map();
   for (const m of ready) analyses.set(m.id, await getAnalysis(m.id));
 
@@ -239,6 +272,7 @@ async function buildContext(project, { playhead, selectedClipId }) {
         ...(speedOf(c) !== 1 ? { speed: speedOf(c) } : {}),
         ...(c.text ? { text: c.text } : {}),
         ...(c.effect ? { effect: c.effect.type, intensity: c.effect.intensity } : {}),
+        ...(c.graphic ? { graphic: c.graphic.template, props: c.graphic.props || {} } : {}),
         ...(c.mediaId && project.media.find((m) => m.id === c.mediaId)?.sfx ? { sound: project.media.find((m) => m.id === c.mediaId).sfx } : {}),
         ...(c.volume != null && c.volume !== 1 && !c.effect && !c.text ? { volume: c.volume } : {}),
         ...(c.fit && c.fit !== "fit" && !c.effect && !c.text ? { fit: c.fit } : {}),
@@ -263,8 +297,16 @@ async function buildContext(project, { playhead, selectedClipId }) {
     timeline.media_on_timeline.push(mapped);
   }
 
+  const imageMedia = [];
+  for (const m of logos) {
+    let data = null;
+    try {
+      data = (await fsp.readFile(path.join(mediaDir(m.id), "thumb.png"))).toString("base64");
+    } catch {}
+    imageMedia.push({ id: m.id, name: m.name, width: m.width, height: m.height, data });
+  }
   const pending = project.media.filter((m) => m.status !== "ready" && !m.sfx).map((m) => `${m.name} (${m.status})`);
-  return { footage, images, timeline, pending };
+  return { footage, images, imageMedia, timeline, pending };
 }
 
 function historyMessages(chat) {
@@ -373,7 +415,14 @@ export async function planEdit(project, { request, playhead = null, selectedClip
 
   // Footage block first: unchanged between requests unless media changes, so
   // it is cached (the breakpoint is on its last block).
-  const footage = [{ type: "text", text: `<footage>\n${JSON.stringify(ctx.footage)}\n</footage>\nKeyframes (${ctx.images.length}), each labeled "media id @ source seconds":` }];
+  const imagesInfo = ctx.imageMedia.map(({ data, ...rest }) => rest);
+  const footage = [{ type: "text", text: `<footage>\n${JSON.stringify({ videos: ctx.footage, images: imagesInfo })}\n</footage>` }];
+  for (const im of ctx.imageMedia) {
+    if (!im.data) continue;
+    footage.push({ type: "text", text: `Image ${im.id} (${im.name}):` });
+    footage.push({ type: "image", source: { type: "base64", media_type: "image/png", data: im.data } });
+  }
+  footage.push({ type: "text", text: `Keyframes (${ctx.images.length}), each labeled "media id @ source seconds":` });
   for (const img of ctx.images) {
     footage.push({ type: "text", text: `${img.mediaId} @ ${img.time}s` });
     footage.push({ type: "image", source: { type: "base64", media_type: "image/jpeg", data: img.data } });

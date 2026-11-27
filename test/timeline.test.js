@@ -179,3 +179,37 @@ test("migrateProject adds effects tracks to old projects", () => {
   T.migrateProject(p);
   assert.equal(p.tracks.filter((t) => t.kind === "fx").length, 2);
 });
+
+// ---- graphics ------------------------------------------------------------------
+
+test("add_graphic places a template on the graphics track", () => {
+  let p = project();
+  p.media.push({ id: "img1", name: "logo.png", isImage: true, duration: 0 });
+  p = T.applyOperation(p, { op: "add_graphic", template: "outro", start: -1, props: { title: "Bye!", logo: "img1", background: "nope" } });
+  const g = p.clips.find((c) => c.graphic);
+  assert.equal(g.trackId, "G1");
+  assert.equal(g.start, 20, "start -1 appends after the end");
+  assert.equal(T.clipEnd(g), 20 + T.GRAPHICS.outro.duration);
+  assert.deepEqual(g.graphic.props, { title: "Bye!", logo: "img1" }, "invalid select values are dropped");
+  assert.throws(() => T.applyOperation(p, { op: "add_graphic", template: "outro", start: 1, props: { logo: "m1" } }), /No image/);
+  assert.throws(() => T.applyOperation(p, { op: "add_graphic", template: "fireworks", start: 1 }), /Unknown graphic/);
+});
+
+test("every graphics template draws without errors", async () => {
+  const { GRAPHICS, drawGraphic } = await import("../shared/graphics.js");
+  // A recording stub context: enough of the 2D API for the templates.
+  const noop = () => {};
+  const grad = { addColorStop: noop };
+  const ctx = new Proxy({}, {
+    get: (t, k) => (k in t ? t[k] : k === "measureText" ? (s) => ({ width: String(s).length * 10 }) : k.startsWith("create") ? () => grad : noop),
+    set: (t, k, v) => ((t[k] = v), true),
+  });
+  const makeCanvas = () => ({ getContext: () => ctx });
+  for (const [id, g] of Object.entries(GRAPHICS)) {
+    const clip = { in: 0, out: g.duration, graphic: { template: id, props: {} } };
+    for (const t of [0, 0.5, g.duration / 2, g.duration - 0.1, g.duration]) {
+      drawGraphic(ctx, clip, t, 1920, 1080, { logo: null, makeCanvas });
+      drawGraphic(ctx, clip, t, 1080, 1920, { logo: null, makeCanvas });
+    }
+  }
+});

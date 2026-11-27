@@ -17,7 +17,7 @@ export function openImport() {
   const pathInput = h("input", { class: "input", spellcheck: false });
   const list = h("div", { class: "fs-list" });
   const diskPane = h("div", {}, h("div", { class: "fs-path" }, h("button", { class: "btn", title: "Up one folder", onclick: () => parent && load(parent) }, "↑"), pathInput, h("button", { class: "btn", onclick: () => load(pathInput.value) }, "Go")), list);
-  const fileInput = h("input", { type: "file", multiple: true, accept: "video/*,audio/*", hidden: true, onchange: () => (fileInput.files.length && uploadFiles(fileInput.files), m.close()) });
+  const fileInput = h("input", { type: "file", multiple: true, accept: "video/*,audio/*,image/*", hidden: true, onchange: () => (fileInput.files.length && uploadFiles(fileInput.files), m.close()) });
   const uploadPane = h(
     "div",
     { hidden: true },
@@ -79,7 +79,7 @@ export function openImport() {
               importBtn.textContent = selected.size > 1 ? `Import ${selected.size} files` : "Import";
             },
           },
-          h("span", {}, it.type === "dir" ? "📁" : /\.(mp3|wav|aac|m4a|flac|ogg|opus|aif|aiff|wma)$/i.test(it.name) ? "🎵" : "🎞"),
+          h("span", {}, it.type === "dir" ? "📁" : /\.(mp3|wav|aac|m4a|flac|ogg|opus|aif|aiff|wma)$/i.test(it.name) ? "🎵" : /\.(png|jpe?g|webp|gif|svg|bmp)$/i.test(it.name) ? "🖼" : "🎞"),
           h("span", {}, it.name),
           it.type === "file" ? h("span", { class: "size" }, fmtBytes(it.size)) : null
         );

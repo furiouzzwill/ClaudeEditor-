@@ -1,6 +1,7 @@
 import { store } from "./state.js";
 import { h } from "./ui.js";
 import { clipDuration, clipEnd, mediaById, trackById, updateClip, trimClip, moveClip, formatTimecode, removeClip, setClipSpeed, speedOf, EFFECT_TYPES } from "/shared/timeline.js";
+import { GRAPHICS, graphicProps } from "/shared/graphics.js";
 
 const root = document.getElementById("tab-inspector");
 
@@ -46,7 +47,7 @@ export function render() {
 
     root.append(
       h("div", { class: "section" },
-        h("h4", {}, track.kind === "text" ? "Title" : track.kind === "fx" ? "Effect" : c.hold ? "Freeze frame" : "Clip"),
+        h("h4", {}, track.kind === "text" ? "Title" : track.kind === "fx" ? "Effect" : track.kind === "graphics" ? "Graphic" : c.hold ? "Freeze frame" : "Clip"),
         media ? field("Source", h("span", { class: "small", title: media.path }, media.name)) : null,
         field("Track", h("span", {}, `${track.id} (${track.kind})`)),
         field("Start", num(c.start, (v) => safe(() => store.commit(moveClip(store.project, c.id, v))))),
@@ -58,6 +59,33 @@ export function render() {
       )
     );
 
+    if (track.kind === "graphics" && c.graphic && GRAPHICS[c.graphic.template]) {
+      const def = GRAPHICS[c.graphic.template];
+      const props = graphicProps(c);
+      const setProp = (k, v) => set({ graphic: { ...c.graphic, props: { ...(c.graphic.props || {}), [k]: v } } });
+      const images = p.media.filter((m) => m.isImage);
+      root.append(
+        h("div", { class: "section" },
+          h("h4", {}, def.label),
+          h("div", { class: "small muted", style: { marginBottom: "10px" } }, def.description),
+          field("Template", h("select", { onchange: (e) => set({ graphic: { template: e.target.value, props: c.graphic.props || {} } }) },
+            ...Object.entries(GRAPHICS).map(([id, g]) => h("option", { value: id, selected: id === c.graphic.template }, g.label))
+          )),
+          ...def.fields.map((f) => {
+            const v = props[f.key];
+            if (f.type === "color") return field(f.label, h("input", { type: "color", value: v || "#ffffff", onchange: (e) => setProp(f.key, e.target.value) }));
+            if (f.type === "select")
+              return field(f.label, h("select", { onchange: (e) => setProp(f.key, e.target.value) }, ...f.options.map((o) => h("option", { value: o, selected: o === v }, o))));
+            if (f.type === "image")
+              return field(f.label, h("select", { onchange: (e) => setProp(f.key, e.target.value) },
+                h("option", { value: "", selected: !v }, images.length ? "None" : "None (import a logo image)"),
+                ...images.map((m) => h("option", { value: m.id, selected: m.id === v }, m.name))
+              ));
+            return field(f.label, h("input", { value: v ?? "", onchange: (e) => setProp(f.key, e.target.value) }));
+          })
+        )
+      );
+    }
     if (track.kind === "fx" && c.effect) {
       const k = c.effect.intensity ?? 0.5;
       const label = h("span", { class: "small muted", style: { minWidth: "40px", textAlign: "right" } }, `${Math.round(k * 100)}%`);

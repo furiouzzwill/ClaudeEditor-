@@ -15,7 +15,10 @@
 //   hold     = freeze frame: shows the source frame at `holdAt` for the duration
 //   effect   = { type, intensity } on an effects (fx) track
 
-export const TRACK_KINDS = ["video", "audio", "text", "fx"];
+export const TRACK_KINDS = ["video", "audio", "text", "fx", "graphics"];
+
+import { GRAPHICS } from "./graphics.js";
+export { GRAPHICS };
 
 export const EFFECT_TYPES = {
   zoom: { label: "Zoom punch-in", intensity: 0.35 },
@@ -65,6 +68,7 @@ export function createProject(name = "Untitled Project") {
     settings: { width: 1920, height: 1080, fps: 30 },
     media: [],
     tracks: [
+      { id: "G1", kind: "graphics", name: "Graphics" },
       { id: "FX2", kind: "fx", name: "Effects 2" },
       { id: "FX1", kind: "fx", name: "Effects 1" },
       { id: "T1", kind: "text", name: "Titles" },
@@ -81,10 +85,13 @@ export function createProject(name = "Untitled Project") {
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
 
-// Older projects predate the effects tracks.
+// Older projects predate the effects and graphics tracks.
 export function migrateProject(p) {
   if (!p.tracks.some((t) => t.kind === "fx")) {
     p.tracks.unshift({ id: "FX2", kind: "fx", name: "Effects 2" }, { id: "FX1", kind: "fx", name: "Effects 1" });
+  }
+  if (!p.tracks.some((t) => t.kind === "graphics")) {
+    p.tracks.unshift({ id: "G1", kind: "graphics", name: "Graphics" });
   }
   return p;
 }
@@ -343,6 +350,7 @@ export const OPERATION_TYPES = [
   "set_clip_speed",
   "freeze_frame",
   "add_sound",
+  "add_graphic",
 ];
 
 export function applyOperation(project, op) {
@@ -453,6 +461,26 @@ export function applyOperation(project, op) {
       const start = s(op.time);
       const trackId = op.trackId || freeTrack(project, "audio", start, start + m.duration, "A1");
       return placeClip(project, { trackId, mediaId: m.id, start, in: 0, out: m.duration, volume: op.volume ?? 1 });
+    }
+    case "add_graphic": {
+      const template = String(op.template || "").toLowerCase();
+      const g = GRAPHICS[template];
+      if (!g) throw new Error(`Unknown graphic ${op.template}`);
+      const p = clone(project);
+      migrateProject(p);
+      // Start -1 = right after the end of everything (e.g. an outro).
+      const start = op.start == null || op.start < 0 ? snapToFrame(timelineDuration(p), fps) : s(op.start);
+      const end = op.end != null && op.end > start ? s(op.end) : start + g.duration;
+      const props = {};
+      for (const f of g.fields) {
+        const v = op.props?.[f.key];
+        if (v == null || v === "") continue;
+        if (f.type === "image" && !p.media.some((m) => m.id === v && m.isImage)) throw new Error(`No image with id ${v} for ${f.key}`);
+        if (f.type === "select" && !f.options.includes(String(v))) continue;
+        props[f.key] = typeof v === "number" ? v : String(v);
+      }
+      const trackId = p.tracks.find((t) => t.kind === "graphics").id;
+      return placeClip(p, { trackId, start, in: 0, out: end - start, graphic: { template, props } });
     }
     case "clear_timeline": {
       const p = clone(project);

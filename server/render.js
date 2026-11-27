@@ -17,8 +17,64 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { ffmpeg } from "./ffmpeg.js";
-import { EXPORTS } from "./store.js";
+import { spawn } from "node:child_process";
+import { createCanvas, loadImage, GlobalFonts } from "@napi-rs/canvas";
+import { ffmpeg, FFMPEG } from "./ffmpeg.js";
+import { EXPORTS, ROOT, mediaDir } from "./store.js";
+import { drawGraphic, graphicProps, GRAPHICS, FONT_FILES, fontFamily } from "../shared/graphics.js";
+
+// The same font files the browser preview uses, under the same names.
+for (const [w, file] of Object.entries(FONT_FILES)) {
+  GlobalFonts.registerFromPath(path.join(ROOT, "public", "fonts", file), fontFamily(w));
+}
+
+// Render a graphics clip to a lossless video with transparency (QuickTime
+// Animation), drawing each frame with the shared template code.
+async function renderGraphicClip(project, c, frames, fps, fpsStr, out, signal) {
+  const { width: W, height: H } = project.settings;
+  let logo = null;
+  const def = GRAPHICS[c.graphic.template];
+  const imgField = def?.fields.find((f) => f.type === "image");
+  const logoId = imgField ? graphicProps(c)[imgField.key] : null;
+  if (logoId) {
+    try {
+      logo = await loadImage(await fsp.readFile(path.join(mediaDir(logoId), "image.png")));
+    } catch {
+      logo = null;
+    }
+  }
+  const canvas = createCanvas(W, H);
+  const ctx = canvas.getContext("2d");
+  const child = spawn(
+    FFMPEG,
+    ["-hide_banner", "-nostdin", "-y", "-f", "rawvideo", "-pix_fmt", "rgba", "-s", `${W}x${H}`, "-r", fpsStr, "-i", "pipe:0",
+     "-c:v", "qtrle", "-pix_fmt", "argb", out],
+    { stdio: ["pipe", "ignore", "pipe"] }
+  );
+  let stderr = "";
+  child.stderr.on("data", (d) => (stderr = (stderr + d).slice(-4000)));
+  const abort = () => child.kill("SIGKILL");
+  signal?.addEventListener("abort", abort, { once: true });
+  const done = new Promise((resolve, reject) => {
+    child.on("error", reject);
+    child.on("close", (code) => (code === 0 ? resolve() : reject(new Error(`graphics encode failed: ${stderr.split("\n").slice(-4).join(" ")}`))));
+  });
+  try {
+    for (let i = 0; i < frames; i++) {
+      if (signal?.aborted) throw new Error("Cancelled");
+      ctx.clearRect(0, 0, W, H);
+      drawGraphic(ctx, c, i / fps, W, H, { logo, makeCanvas: (w, h) => createCanvas(w, h) });
+      const buf = ctx.getImageData(0, 0, W, H).data;
+      if (!child.stdin.write(Buffer.from(buf.buffer, buf.byteOffset, buf.byteLength))) {
+        await new Promise((r) => child.stdin.once("drain", r));
+      }
+    }
+  } finally {
+    child.stdin.end();
+    signal?.removeEventListener("abort", abort);
+  }
+  await done;
+}
 import { clipDuration, clipEnd, mediaById, timelineDuration, trackById, speedOf } from "../shared/timeline.js";
 
 export const QUALITY = {
@@ -104,7 +160,10 @@ export async function renderProject(project, { quality = "standard", fileName, o
     // picture overlays (they must sit under the titles). Titles alone are drawn
     // while each segment is cut, and extra audio is mixed while the video
     // stream is copied untouched.
-    const needsComposite = overlayClips.length > 0;
+    const graphicClips = project.clips
+      .filter((c) => c.graphic && GRAPHICS[c.graphic.template] && trackById(project, c.trackId)?.kind === "graphics")
+      .sort((a, b) => a.start - b.start);
+    const needsComposite = overlayClips.length > 0 || graphicClips.length > 0;
     const burnTextInSegments = !needsComposite && textClips.length > 0;
 
     let font = null;
@@ -224,6 +283,7 @@ export async function renderProject(project, { quality = "standard", fileName, o
       ...lane.map((seg, i) => ({ kind: "lane", seg, i })),
       ...overlayClips.map((c, i) => ({ kind: "overlay", clip: c, i })),
       ...audioClips.map((c, i) => ({ kind: "audio", clip: c, i })),
+      ...graphicClips.map((c, i) => ({ kind: "graphic", clip: c, i })),
     ];
     const weight = (j) => (j.kind === "lane" ? j.seg.frames * frame : clipDuration(j.clip)) + 0.2;
     const totalWork = jobs.reduce((a, j) => a + weight(j), 0);
@@ -238,6 +298,10 @@ export async function renderProject(project, { quality = "standard", fileName, o
     const pcm = ["-c:a", "pcm_s16le", "-ar", "48000", "-ac", "2"];
 
     const renderSegment = async (j) => {
+      if (j.kind === "graphic") {
+        await renderGraphicClip(project, j.clip, toFrames(clipDuration(j.clip)), fr.value, fr.str, path.join(work, `graphic_${j.i}.mov`), signal);
+        return;
+      }
       if (j.kind === "lane" && j.seg.gap) {
         const dur = (j.seg.frames * frame).toFixed(6);
         const titles = segmentEffects(j.seg.startFrame, j.seg.frames) + segmentTitles(j.seg.startFrame, j.seg.frames);
@@ -357,6 +421,16 @@ export async function renderProject(project, { quality = "standard", fileName, o
       vChain.push(`${vLabel}${drawtext(c, 0)}${out}`);
       vLabel = out;
     });
+    // Graphics go on top of everything.
+    for (const j of jobs.filter((x) => x.kind === "graphic")) {
+      const t0 = toFrames(j.clip.start) * frame;
+      const t1 = t0 + toFrames(clipDuration(j.clip)) * frame;
+      inputs.push("-itsoffset", t0.toFixed(6), "-i", path.join(work, `graphic_${j.i}.mov`));
+      const out = `[gx${j.i}]`;
+      vChain.push(`${vLabel}[${idx}:v]overlay=x=0:y=0:eof_action=pass:enable='between(t,${t0.toFixed(4)},${t1.toFixed(4)})'${out}`);
+      vLabel = out;
+      idx++;
+    }
     vChain.push(`${vLabel}format=yuv420p[vout]`);
     const mix = audioMix(idx);
     inputs.push(...mix.ins);

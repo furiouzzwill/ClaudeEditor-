@@ -4,6 +4,7 @@
 
 - **Works with huge files.** A 50 GB source is as easy as a 50 MB one. Your video never leaves your computer; the assistant only sees a compact summary.
 - **Tuned for your kind of video.** Pick a video type (general, unboxing / pack opening, gaming, vlog, tutorial, sports) and the assistant edits in that style.
+- **Clean animated graphics.** Outro end screens, subscribe & comment reminders, logo reveals, name tags and animated titles, using your own logo.
 - **Fun effects built in.** Zooms, shakes, flashes, holo shimmer, slow motion, freeze frames, bold titles and 8 sound effects.
 - **Runs locally** in your browser on Mac, Windows or Linux. You bring your own Anthropic API key.
 
@@ -64,6 +65,14 @@ Adding a new type means adding one entry to [`shared/presets.js`](shared/presets
 - Inspector: timing, source in/out, speed, volume, fit or fill framing, title style, effect type and intensity
 - Project formats: 16:9, 9:16, 4:5, 1:1 and 4K, at 23.976 to 60 fps
 - Export to H.264/AAC MP4 at draft, standard or high quality, rendered from your original files
+
+**Animated graphics** (from the 🎬 Graphics menu, or ask the assistant: "add an outro with my logo", "add a subscribe reminder")
+- **Outro / end screen:** your logo with an animated ring, a thank-you and subscribe button, plus "watch next" spaces where YouTube's end-screen cards go
+- **Subscribe / comment reminder:** a card pops up, a cursor clicks Subscribe and rings the bell, with a like & comment line
+- **Logo reveal:** your logo scales in with a light sweep, then your name and tagline
+- **Name tag (lower third)** and **animated title** (words rise in with an accent underline)
+- Import your logo (PNG, JPG, SVG or WebP) like any media. Every text, color and logo is editable in the Inspector. Templates adapt to vertical 9:16 too.
+- Graphics are drawn by the same code in the preview and the export, with bundled fonts, so what you see is exactly what you get.
 
 **Effects** (from the ✨ Effects and 🔊 Sounds menus, or ask the assistant)
 - Zoom punch-in, camera shake, white flash, rainbow holo shimmer, blur, black & white, spotlight vignette, each with adjustable intensity
@@ -140,10 +149,10 @@ A 20-minute export with 60 cuts and a title took 9 min 6 s at standard quality, 
 
 ## Contributing
 
-Contributions are welcome: bug reports, new effects, new video types, translations, packaging. See [CONTRIBUTING.md](CONTRIBUTING.md) for how the code is organized and how to add things.
+Contributions are welcome: bug reports, new graphics templates, effects, video types, translations, packaging. See [CONTRIBUTING.md](CONTRIBUTING.md) for how the code is organized and how to add things.
 
 **Roadmap ideas:** a desktop app with an installer (Electron or Tauri, with Node and FFmpeg bundled); animated stickers and particles; transitions and audio fades; color correction and LUTs; word-level transcript editing; more tracks with mute/lock; hardware-accelerated encoding.
 
 ## License
 
-[MIT](LICENSE). Use it, change it, share it, sell things you make with it.
+[MIT](LICENSE). Use it, change it, share it, sell things you make with it. The bundled Inter font is under the SIL Open Font License ([public/fonts/OFL.txt](public/fonts/OFL.txt)).

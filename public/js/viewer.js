@@ -4,6 +4,7 @@
 
 import { store } from "./state.js";
 import { clipEnd, mediaById, formatTimecode, videoTracksBottomUp, srcAt, speedOf } from "/shared/timeline.js";
+import { drawGraphic, graphicProps, GRAPHICS, FONT_FILES, fontFamily } from "/shared/graphics.js";
 
 const stageWrap = document.getElementById("stageWrap");
 const stage = document.getElementById("stage");
@@ -23,6 +24,58 @@ flashEl.style.cssText = "position:absolute;inset:0;background:#fff;opacity:0;poi
 const spotEl = document.createElement("div");
 spotEl.style.cssText = "position:absolute;inset:0;pointer-events:none;z-index:39;opacity:0;background:radial-gradient(ellipse at center, transparent 35%, rgba(0,0,0,0.92) 100%)";
 stage.append(spotEl, flashEl);
+
+// Graphics (motion templates) are drawn on a canvas above everything, with
+// the same code and fonts the export uses.
+const gfxCanvas = document.createElement("canvas");
+gfxCanvas.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none;z-index:60";
+stage.append(gfxCanvas);
+const gctx = gfxCanvas.getContext("2d");
+const logoCache = new Map(); // mediaId -> HTMLImageElement
+const makeCanvas = (w, h) => Object.assign(document.createElement("canvas"), { width: w, height: h });
+let fontsReady = false;
+Promise.all(
+  Object.entries(FONT_FILES).map(([w, file]) => new FontFace(fontFamily(w), `url(/fonts/${file})`).load().then((f) => document.fonts.add(f)))
+)
+  .then(() => {
+    fontsReady = true;
+    drawGraphics(store.playhead);
+  })
+  .catch(() => {});
+
+function logoFor(c) {
+  const field = GRAPHICS[c.graphic.template]?.fields.find((f) => f.type === "image");
+  const id = field ? graphicProps(c)[field.key] : null;
+  if (!id) return null;
+  let img = logoCache.get(id);
+  if (!img) {
+    img = new Image();
+    img.onload = () => drawGraphics(store.playhead);
+    img.src = `/media/${id}/image`;
+    logoCache.set(id, img);
+  }
+  return img.complete && img.naturalWidth ? img : null;
+}
+
+export function drawGraphics(t) {
+  const p = store.project;
+  if (!p) return;
+  const dpr = window.devicePixelRatio || 1;
+  const cw = Math.round(stage.clientWidth * dpr);
+  const ch = Math.round(stage.clientHeight * dpr);
+  if (gfxCanvas.width !== cw || gfxCanvas.height !== ch) {
+    gfxCanvas.width = cw;
+    gfxCanvas.height = ch;
+  }
+  gctx.setTransform(1, 0, 0, 1, 0, 0);
+  gctx.clearRect(0, 0, cw, ch);
+  if (!fontsReady) return;
+  const active = p.clips.filter((c) => c.graphic && t >= c.start && t < clipEnd(c));
+  if (!active.length) return;
+  const { width: W, height: H } = p.settings;
+  gctx.setTransform(cw / W, 0, 0, ch / H, 0, 0);
+  for (const c of active) drawGraphic(gctx, c, t - c.start, W, H, { logo: logoFor(c), makeCanvas });
+}
 
 function applyEffects(t) {
   const p = store.project;
@@ -170,6 +223,7 @@ function syncTo(t, playing) {
   empty.hidden = anyVideo || store.project.clips.length > 0;
   applyEffects(t);
   renderText();
+  drawGraphics(t);
 }
 
 function renderText() {

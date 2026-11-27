@@ -21,6 +21,7 @@ import { uid } from "../shared/timeline.js";
 
 export const VIDEO_EXT = /\.(mp4|mov|m4v|mkv|webm|avi|mxf|mts|m2ts|ts|flv|wmv|mpg|mpeg|3gp|ogv)$/i;
 export const AUDIO_EXT = /\.(mp3|wav|aac|m4a|flac|ogg|opus|aif|aiff|wma)$/i;
+export const IMAGE_EXT = /\.(png|jpe?g|webp|gif|svg|bmp)$/i;
 
 const PROXY_HEIGHT = Number(process.env.PROXY_HEIGHT || 540);
 const WAVE_RATE = 20; // peaks per second
@@ -31,7 +32,62 @@ const MAX_KEYFRAMES = 150;
 const KEYFRAME_EVERY = 2;
 const KEYFRAME_HEIGHT = 432; // tall enough for Claude to read cards held up to the camera
 
+// Images (logos) are normalized to a PNG once on import; graphics templates
+// use that PNG in both the preview and the export.
+async function registerImage(projectId, { filePath, name, mediaId }) {
+  const { loadImage, createCanvas } = await import("@napi-rs/canvas");
+  let img;
+  try {
+    img = await loadImage(await fsp.readFile(filePath));
+  } catch (e) {
+    throw new Error(`Couldn't read that image: ${e.message}`);
+  }
+  const dir = mediaDir(mediaId);
+  await fsp.mkdir(path.join(dir, "thumbs"), { recursive: true });
+  const save = async (maxSide, file, type) => {
+    const s = Math.min(1, maxSide / Math.max(img.width, img.height));
+    const w = Math.max(1, Math.round(img.width * s));
+    const h = Math.max(1, Math.round(img.height * s));
+    const c = createCanvas(w, h);
+    const ctx = c.getContext("2d");
+    if (type === "image/jpeg") {
+      ctx.fillStyle = "#26262c"; // JPEG has no transparency
+      ctx.fillRect(0, 0, w, h);
+    }
+    ctx.drawImage(img, 0, 0, w, h);
+    await fsp.writeFile(path.join(dir, file), await c.encode(type === "image/jpeg" ? "jpeg" : "png"));
+    return { w, h };
+  };
+  const { w, h } = await save(1600, "image.png", "image/png");
+  await save(160, "thumbs/0001.jpg", "image/jpeg");
+  await save(256, "thumb.png", "image/png");
+  const media = {
+    id: mediaId,
+    name: name || path.basename(filePath),
+    path: path.resolve(filePath),
+    isImage: true,
+    hasVideo: false,
+    hasAudio: false,
+    duration: 0,
+    width: w,
+    height: h,
+    size: (await fsp.stat(filePath)).size,
+    status: "ready",
+    progress: 1,
+    proxy: null,
+    thumbInterval: 1,
+    thumbCount: 1,
+    analysis: null,
+    addedAt: Date.now(),
+  };
+  await updateProject(projectId, (p) => {
+    p.media.push(media);
+  });
+  return media;
+}
+
 export async function registerMedia(projectId, { filePath, name, mediaId = uid("m"), extra = {} }) {
+  if (IMAGE_EXT.test(filePath) || IMAGE_EXT.test(name || "")) return registerImage(projectId, { filePath, name, mediaId });
   const info = await probe(filePath);
   if (!info.hasVideo && !info.hasAudio) throw new Error("No audio or video streams found in this file");
   if (info.isImage) throw new Error("Still images aren't supported yet. Import video or audio files.");

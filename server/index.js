@@ -6,7 +6,7 @@ import { pipeline } from "node:stream/promises";
 import express from "express";
 import Anthropic from "@anthropic-ai/sdk";
 import * as store from "./store.js";
-import { registerMedia, queuePrepare, removeMediaFiles, VIDEO_EXT, AUDIO_EXT, whisperAvailable, queueTranscribe } from "./media.js";
+import { registerMedia, queuePrepare, removeMediaFiles, VIDEO_EXT, AUDIO_EXT, IMAGE_EXT, whisperAvailable, queueTranscribe } from "./media.js";
 import { listJobs, cancelJob, createJob, getJob } from "./jobs.js";
 import { renderProject, QUALITY } from "./render.js";
 import { planEdit, aiStatus, DEFAULT_MODEL } from "./ai.js";
@@ -82,7 +82,7 @@ app.post("/api/projects/:id/import", express.json(), wrap(async (req, res) => {
 app.put("/api/projects/:id/upload", wrap(async (req, res) => {
   await store.getProject(req.params.id);
   const name = path.basename(String(req.query.name || "upload.mp4"));
-  if (!VIDEO_EXT.test(name) && !AUDIO_EXT.test(name)) throw Object.assign(new Error("Unsupported file type"), { status: 400 });
+  if (!VIDEO_EXT.test(name) && !AUDIO_EXT.test(name) && !IMAGE_EXT.test(name)) throw Object.assign(new Error("Unsupported file type"), { status: 400 });
   const mediaId = uid("m");
   const dir = store.mediaDir(mediaId);
   await fsp.mkdir(dir, { recursive: true });
@@ -146,7 +146,7 @@ app.get("/api/fs", wrap(async (req, res) => {
   for (const e of entries) {
     if (e.name.startsWith(".")) continue;
     if (e.isDirectory()) items.push({ name: e.name, type: "dir" });
-    else if (e.isFile() && (VIDEO_EXT.test(e.name) || AUDIO_EXT.test(e.name))) {
+    else if (e.isFile() && (VIDEO_EXT.test(e.name) || AUDIO_EXT.test(e.name) || IMAGE_EXT.test(e.name))) {
       const st = await fsp.stat(path.join(dir, e.name)).catch(() => null);
       items.push({ name: e.name, type: "file", size: st?.size ?? 0 });
     }
@@ -170,6 +170,11 @@ app.get("/media/:mid/thumbs/:file", (req, res) => {
   const id = safeId(req.params.mid);
   if (!id || !/^\d{4}\.jpg$/.test(req.params.file)) return res.sendStatus(400);
   res.sendFile(path.join(store.mediaDir(id), "thumbs", req.params.file), { maxAge: "1h" }, (e) => e && res.sendStatus(404));
+});
+app.get("/media/:mid/image", (req, res) => {
+  const id = safeId(req.params.mid);
+  if (!id) return res.sendStatus(400);
+  res.sendFile(path.join(store.mediaDir(id), "image.png"), { maxAge: 0 }, (e) => e && res.sendStatus(404));
 });
 app.get("/media/:mid/waveform", (req, res) => {
   const id = safeId(req.params.mid);

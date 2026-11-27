@@ -22,6 +22,8 @@ Open http://localhost:5317. You need Node.js 20+ and FFmpeg on your PATH. To try
 shared/timeline.js   The timeline model and every edit operation. Pure functions,
                      used by both the browser and the server. Start here.
 shared/presets.js    Video types: assistant guidance + quick actions per genre
+shared/graphics.js   Animated graphics templates (outro, subscribe, logo reveal…).
+                     Pure canvas drawing code used by both preview and export.
 shared/brand.js      The app's name (one place to change it)
 server/index.js      HTTP API
 server/media.js      Import pipeline: probe, proxy, thumbnails, waveform,
@@ -43,6 +45,12 @@ Key ideas:
 ## Common contributions
 
 **A new video type:** add an entry to `VIDEO_TYPES` in `shared/presets.js`, with a label, guidance for the assistant and 3–6 quick actions. Keep the guidance short and concrete: what the good moments are, how to find them (loud moments, keyframes, transcript) and which effects suit them.
+
+**A new animated graphics template:** add an entry to `GRAPHICS` in `shared/graphics.js`. It needs a label, a description, a default duration, editable fields and a `draw({ ctx, t, d, W, H, p, logo, makeCanvas })` function. That's all: the 🎬 menu, the Inspector, the export and the assistant's schema pick it up automatically.
+- Draw in project pixels, scaled by `S = Math.min(W, H) / 1080`, so it works at any resolution and in vertical video.
+- Use the easing helpers and keep motion fast and clean (most entrances take 0.3–0.6 s).
+- Make it a pure function of `t`: no randomness and no state between frames. The export renders each frame independently.
+- Use only the bundled fonts (`F(weight, px)`), so the export matches the preview.
 
 **A new visual effect:**
 1. Add it to `EFFECT_TYPES` in `shared/timeline.js`, with a label and default intensity.

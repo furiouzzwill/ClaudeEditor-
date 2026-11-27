@@ -1,7 +1,7 @@
 import { store } from "./state.js";
 import { api } from "./api.js";
 import { h, toast, fmtDur, fmtBytes } from "./ui.js";
-import { appendMedia } from "/shared/timeline.js";
+import { appendMedia, applyOperation, snapToFrame } from "/shared/timeline.js";
 import { forgetMedia } from "./timeline.js";
 
 const pool = document.getElementById("mediaPool");
@@ -31,8 +31,9 @@ export function render() {
     if (m.sfx) continue; // built-in sounds live in the 🔊 Sounds menu
     const ready = m.status === "ready";
     const thumbN = m.thumbCount ? String(Math.max(1, Math.ceil(m.thumbCount / 3))).padStart(4, "0") : null;
-    const sub =
-      m.status === "error"
+    const sub = m.isImage
+      ? `Image · ${m.width}×${m.height} · drag in or double-click for a logo reveal`
+      : m.status === "error"
         ? "Error: " + (m.error || "processing failed")
         : !ready
           ? `${m.progressLabel || "Processing"} ${Math.round((m.progress || 0) * 100)}%`
@@ -51,6 +52,11 @@ export function render() {
         ondragend: () => (window.__draggingMedia = null),
         ondblclick: () => {
           try {
+            if (m.isImage) {
+              const t = snapToFrame(store.playhead, store.project.settings.fps);
+              store.commit(applyOperation(store.project, { op: "add_graphic", template: "logo_reveal", start: t, props: { logo: m.id } }));
+              return;
+            }
             store.commit(appendMedia(store.project, m.id));
           } catch (e) {
             toast(e.message, { error: true });
@@ -61,10 +67,14 @@ export function render() {
         "div",
         {
           class: "thumb",
-          style: thumbN && m.hasVideo ? { backgroundImage: `url(/media/${m.id}/thumbs/${thumbN}.jpg)` } : null,
+          style: m.isImage
+            ? { backgroundImage: `url(/media/${m.id}/image)`, backgroundSize: "contain", backgroundColor: "#2a2a30" }
+            : thumbN && m.hasVideo
+              ? { backgroundImage: `url(/media/${m.id}/thumbs/${thumbN}.jpg)` }
+              : null,
         },
-        m.hasVideo ? "" : "♪",
-        h("span", { class: "dur" }, fmtDur(m.duration))
+        m.hasVideo || m.isImage ? "" : "♪",
+        h("span", { class: "dur" }, m.isImage ? "LOGO" : fmtDur(m.duration))
       ),
       !ready && m.status !== "error" ? h("div", { class: "progress" }, h("i", { style: { width: `${Math.round((m.progress || 0) * 100)}%` } })) : null,
       h("div", { class: "meta" },
@@ -116,8 +126,8 @@ function transcriptLine(m) {
 }
 
 export async function uploadFiles(files) {
-  const list = [...files].filter((f) => /\.(mp4|mov|m4v|mkv|webm|avi|mxf|mts|m2ts|ts|flv|wmv|mpg|mpeg|3gp|ogv|mp3|wav|aac|m4a|flac|ogg|opus|aif|aiff|wma)$/i.test(f.name));
-  if (!list.length) return toast("Those files aren't a supported video or audio format.", { error: true });
+  const list = [...files].filter((f) => /\.(mp4|mov|m4v|mkv|webm|avi|mxf|mts|m2ts|ts|flv|wmv|mpg|mpeg|3gp|ogv|mp3|wav|aac|m4a|flac|ogg|opus|aif|aiff|wma|png|jpe?g|webp|gif|svg|bmp)$/i.test(f.name));
+  if (!list.length) return toast("Those files aren't a supported video, audio or image format.", { error: true });
   await Promise.all(
     list.map(async (file) => {
       const id = Math.random().toString(36).slice(2);

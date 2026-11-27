@@ -1,18 +1,20 @@
 import { store } from "./state.js";
 import {
   clipDuration, clipEnd, mediaById, trackById, placeClip, splitAt, trimClip,
-  formatTimecode, snapToFrame, uid, speedOf, EFFECT_TYPES,
+  formatTimecode, snapToFrame, uid, speedOf, EFFECT_TYPES, applyOperation,
 } from "/shared/timeline.js";
+import { GRAPHICS, graphicProps } from "/shared/graphics.js";
 
 const HEADER_W = 92;
 const RULER_H = 28;
-const TRACK_H = { fx: 24, text: 30, video: 58, audio: 42 };
+const TRACK_H = { graphics: 28, fx: 22, text: 28, video: 56, audio: 40 };
 const EDGE = 7; // px grab zone for trimming
 const COLORS = {
   video: ["#2d5488", "#3d6fb0", "#5a8ed1"],
   audio: ["#2c6a46", "#3f8f5e", "#5bb37f"],
   text: ["#5a4290", "#7a5bb5", "#9c7fd6"],
   fx: ["#8a4a1f", "#c8682c", "#f0995a"],
+  graphics: ["#7a2f5c", "#b8478a", "#e88cc4"],
 };
 
 const canvas = document.getElementById("timeline");
@@ -309,7 +311,7 @@ function draw() {
     if (h > 40) {
       ctx.fillStyle = "#8d8f99";
       ctx.font = "11px Inter, system-ui, sans-serif";
-      ctx.fillText(track.kind === "video" ? "Video" : track.kind === "audio" ? "Audio" : track.kind === "fx" ? "Effects" : "Titles", 12, y + h / 2 + 9);
+      ctx.fillText(track.kind === "video" ? "Video" : track.kind === "audio" ? "Audio" : track.kind === "fx" ? "Effects" : track.kind === "graphics" ? "Graphics" : "Titles", 12, y + h / 2 + 9);
     }
   }
   ctx.strokeStyle = "#2b2c33";
@@ -438,7 +440,7 @@ function drawClip(c, track, y, h, { ghost = false, dim = false } = {}) {
     ctx.fillStyle = base;
     ctx.fillRect(x0, top, w, 15);
     drawWave(c, media, visX0, visX1, x0, top + 15, hh - 15, light);
-  } else if (track.kind === "text" || track.kind === "fx") {
+  } else if (track.kind === "text" || track.kind === "fx" || track.kind === "graphics") {
     ctx.fillStyle = base;
     ctx.fillRect(x0, top, w, hh);
   }
@@ -453,13 +455,15 @@ function drawClip(c, track, y, h, { ghost = false, dim = false } = {}) {
         ? "T  " + (c.text || "").replace(/\n/g, " ")
         : track.kind === "fx"
           ? "✦ " + (EFFECT_TYPES[c.effect?.type]?.label || c.effect?.type || "Effect")
+          : track.kind === "graphics"
+            ? "🎬 " + (GRAPHICS[c.graphic?.template]?.label || "Graphic") + graphicSummary(c)
           : c.hold
             ? "❄ Freeze frame"
             : (media?.sfx ? "🔊 " : "") + (media?.name?.replace(/^SFX · /, "") || "Missing media") + (speedOf(c) !== 1 ? `  ·  ${speedOf(c)}×` : "");
-    const centered = track.kind === "text" || track.kind === "fx";
-    ctx.fillText(label, Math.max(x0, HEADER_W) + 6, top + (centered ? hh / 2 : 8), Math.max(10, visX1 - Math.max(x0, HEADER_W) - 10));
+    const centered = track.kind === "text" || track.kind === "fx" || track.kind === "graphics";
+    ctx.fillText(label, Math.max(x0, HEADER_W) + 6, top + (centered ? hh / 2 : 8)); // clipped to the clip, not squashed
   }
-  if ((c.volume ?? 1) !== 1 && w > 60 && track.kind !== "text" && track.kind !== "fx" && !c.hold) {
+  if ((c.volume ?? 1) !== 1 && w > 60 && track.kind !== "text" && track.kind !== "fx" && track.kind !== "graphics" && !c.hold) {
     ctx.fillStyle = "rgba(0,0,0,0.5)";
     const txt = c.volume === 0 ? "muted" : `${Math.round(c.volume * 100)}%`;
     ctx.font = "10px Inter, sans-serif";
@@ -481,6 +485,12 @@ function drawClip(c, track, y, h, { ghost = false, dim = false } = {}) {
     ctx.fillRect(hx, top, 4, hh);
   }
   ctx.restore();
+}
+
+function graphicSummary(c) {
+  const p = graphicProps(c);
+  const text = p.headline || p.title || p.name || p.text || "";
+  return text ? `  ·  ${text}` : "";
 }
 
 function drawWave(c, media, visX0, visX1, x0, y, h, color) {
@@ -698,9 +708,17 @@ canvas.addEventListener("dragover", (e) => {
   if (!media) return;
   e.preventDefault();
   const { x, y } = pointer(e);
+  if (media.isImage) {
+    const g = trackLayout().find((l) => l.track.kind === "graphics");
+    const start = frameSnap(Math.max(0, snap(tOf(x), snapPoints())));
+    const d = GRAPHICS.logo_reveal.duration;
+    dropGhost = { trackId: g.track.id, image: media.id, clip: { id: "ghost", trackId: g.track.id, start, in: 0, out: d, graphic: { template: "logo_reveal", props: { logo: media.id } } } };
+    redraw();
+    return;
+  }
   let lay = trackAt(y);
   let kind = lay?.track.kind;
-  if (!lay || kind === "text" || kind === "fx" || (kind === "video" && !media.hasVideo)) {
+  if (!lay || kind === "text" || kind === "fx" || kind === "graphics" || (kind === "video" && !media.hasVideo)) {
     lay = trackLayout().find((l) => l.track.kind === (media.hasVideo ? "video" : "audio") && l.track.id.endsWith("1"));
   }
   const dur = media.duration;
@@ -717,6 +735,13 @@ canvas.addEventListener("drop", (e) => {
   const g = dropGhost;
   dropGhost = null;
   if (!g) return;
+  if (g.image) {
+    const before = new Set(store.project.clips.map((c) => c.id));
+    store.commit(applyOperation(store.project, { op: "add_graphic", template: "logo_reveal", start: g.clip.start, props: { logo: g.image } }));
+    const added = store.project.clips.find((c) => !before.has(c.id));
+    if (added) store.select(added.id);
+    return;
+  }
   const clip = { ...g.clip, id: uid() };
   store.commit(placeClip(store.project, clip));
   store.select(clip.id);

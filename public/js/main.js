@@ -12,7 +12,7 @@ import { APP_NAME } from "/shared/brand.js";
 
 document.title = APP_NAME;
 document.getElementById("appName").textContent = APP_NAME;
-import { splitAt, removeClip, deleteRanges, clipEnd, uid, snapToFrame, applyOperation, EFFECT_TYPES, SOUND_EFFECTS } from "/shared/timeline.js";
+import { splitAt, removeClip, deleteRanges, clipEnd, uid, snapToFrame, applyOperation, EFFECT_TYPES, SOUND_EFFECTS, GRAPHICS } from "/shared/timeline.js";
 
 const $ = (id) => document.getElementById(id);
 
@@ -123,6 +123,30 @@ function runOp(op) {
     toast(e.message, { error: true });
   }
 }
+$("btnGraphics").onclick = (e) => {
+  const t = snapToFrame(store.playhead, store.project.settings.fps);
+  // Use the project's first image as the logo, if there is one.
+  const logo = store.project.media.find((m) => m.isImage)?.id;
+  menu(e.currentTarget, [
+    ...Object.entries(GRAPHICS).map(([template, g]) => ({
+      label: g.label,
+      hint: `${g.duration}s`,
+      action: () => {
+        const before = new Set(store.project.clips.map((c) => c.id));
+        const props = logo && g.fields.some((f) => f.key === "logo") ? { logo } : {};
+        runOp({ op: "add_graphic", template, start: template === "outro" ? -1 : t, props });
+        const added = store.project.clips.find((c) => !before.has(c.id));
+        if (added) {
+          store.select(added.id);
+          if (template === "outro") store.setPlayhead(added.start + 2);
+        }
+      },
+    })),
+    "-",
+    { label: logo ? "Tip: graphics use your first imported image as the logo" : "Tip: import a PNG/JPG/SVG logo to use it in graphics", action: () => {} },
+  ]);
+};
+
 $("btnEffects").onclick = (e) => {
   const t = snapToFrame(store.playhead, store.project.settings.fps);
   menu(e.currentTarget, [
